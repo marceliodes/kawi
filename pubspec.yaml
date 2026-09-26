@@ -9,6 +9,7 @@ environment:
   sdk: ^3.13.4
 
 dependencies:
+  ffi: ^2.2.0
   flutter:
     sdk: flutter
   flutter_riverpod: ^3.4.3

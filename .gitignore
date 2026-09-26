@@ -49,3 +49,7 @@ app.*.map.json
 
 # Internal agent orchestration & architecture plans
 own_docs/
+
+# Test documents
+test_assets/
+
