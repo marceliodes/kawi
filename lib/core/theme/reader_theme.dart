@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'reader_theme_data.dart';
+export 'reader_theme_data.dart';
 
 class ReaderTheme extends InheritedWidget {
   const ReaderTheme({required this.data, required super.child, super.key});

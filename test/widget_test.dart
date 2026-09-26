@@ -1,11 +1,23 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:kawi/core/database/app_database.dart';
+import 'package:kawi/features/library/providers/library_provider.dart';
 import 'package:kawi/main.dart';
 
 void main() {
   testWidgets('KawiApp renders library empty state', (tester) async {
-    await tester.pumpWidget(const ProviderScope(child: KawiApp()));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          documentsStreamProvider.overrideWith(
+            (ref) => Stream.value(<DocumentEntry>[]),
+          ),
+          shelvesStreamProvider.overrideWith((ref) => Stream.value(<Shelf>[])),
+        ],
+        child: const KawiApp(),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('Your library is empty'), findsOneWidget);
@@ -15,7 +27,19 @@ void main() {
   testWidgets(
     'Theme selection menu lists all 6 curated themes and updates preset',
     (tester) async {
-      await tester.pumpWidget(const ProviderScope(child: KawiApp()));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            documentsStreamProvider.overrideWith(
+              (ref) => Stream.value(<DocumentEntry>[]),
+            ),
+            shelvesStreamProvider.overrideWith(
+              (ref) => Stream.value(<Shelf>[]),
+            ),
+          ],
+          child: const KawiApp(),
+        ),
+      );
       await tester.pumpAndSettle();
 
       // Find and tap the theme menu button
