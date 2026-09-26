@@ -1,30 +1,43 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:kawi/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('KawiApp renders library empty state', (tester) async {
+    await tester.pumpWidget(const ProviderScope(child: KawiApp()));
+    await tester.pumpAndSettle();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('Your library is empty'), findsOneWidget);
+    expect(find.text('Import Document'), findsOneWidget);
   });
+
+  testWidgets(
+    'Theme selection menu lists all 6 curated themes and updates preset',
+    (tester) async {
+      await tester.pumpWidget(const ProviderScope(child: KawiApp()));
+      await tester.pumpAndSettle();
+
+      // Find and tap the theme menu button
+      final themeButton = find.byTooltip('Select theme (Paper)');
+      expect(themeButton, findsOneWidget);
+      await tester.tap(themeButton);
+      await tester.pumpAndSettle();
+
+      // Verify all 6 curated themes are listed in the popup menu
+      expect(find.text('Paper'), findsOneWidget);
+      expect(find.text('Cupertino Light'), findsOneWidget);
+      expect(find.text('Gruvbox Light'), findsOneWidget);
+      expect(find.text('Gruvbox Dark'), findsOneWidget);
+      expect(find.text('Cupertino Dark'), findsOneWidget);
+      expect(find.text('OLED Black'), findsOneWidget);
+
+      // Select OLED Black
+      await tester.tap(find.text('OLED Black'));
+      await tester.pumpAndSettle();
+
+      // Tooltip should now reflect the selected preset
+      expect(find.byTooltip('Select theme (OLED Black)'), findsOneWidget);
+    },
+  );
 }
