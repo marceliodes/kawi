@@ -96,60 +96,27 @@ final class FzQuad extends Struct {
   external FzPoint lr;
 }
 
-final class FzStextBlockText extends Struct {
-  external Pointer<FzStextLine> firstLine;
-  external Pointer<FzStextLine> lastLine;
-}
-
-final class FzStextBlock extends Struct {
-  @Int32()
-  external int type;
-  external FzRect bbox;
-  @Int32()
-  external int padUnion;
-  external Pointer<FzStextLine> firstLine;
-  external Pointer<FzStextLine> lastLine;
-  @Int64()
-  external int padUnion1;
-  @Int64()
-  external int padUnion2;
-  external Pointer<FzStextBlock> prev;
-  external Pointer<FzStextBlock> next;
-}
-
-final class FzStextLine extends Struct {
-  @Int32()
-  external int wmode;
-  external FzPoint dir;
-  external FzRect bbox;
-  @Int32()
-  external int padPtr;
-  external Pointer<FzStextChar> firstChar;
-  external Pointer<FzStextChar> lastChar;
-  external Pointer<FzStextLine> prev;
-  external Pointer<FzStextLine> next;
-}
-
-final class FzStextChar extends Struct {
-  @Int32()
-  external int c;
-  @Int32()
-  external int color;
-  external FzPoint origin;
-  external FzQuad quad;
+final class KawiWord extends Struct {
   @Float()
-  external double size;
-  @Int32()
-  external int padPtr;
-  external Pointer<Void> font;
-  external Pointer<FzStextChar> next;
-}
+  external double x0;
+  @Float()
+  external double y0;
+  @Float()
+  external double x1;
+  @Float()
+  external double y1;
+  @Array(128)
+  external Array<Uint8> text;
 
-final class FzStextPageStruct extends Struct {
-  external Pointer<Void> pool;
-  external FzRect mediabox;
-  external Pointer<FzStextBlock> firstBlock;
-  external Pointer<FzStextBlock> lastBlock;
+  String get wordString {
+    final list = <int>[];
+    for (var i = 0; i < 128; i++) {
+      final byte = text[i];
+      if (byte == 0) break;
+      list.add(byte);
+    }
+    return String.fromCharCodes(list);
+  }
 }
 
 class MuPdfBindings {
@@ -213,6 +180,22 @@ class MuPdfBindings {
 
   late final void Function(Pointer<FzContext> ctx, Pointer<FzOutline> outline)
   fzDropOutline;
+
+  late final FzLocation Function(
+    Pointer<FzContext> ctx,
+    Pointer<FzDocument> doc,
+    Pointer<Utf8> uri,
+    Pointer<Float> xp,
+    Pointer<Float> yp,
+  )
+  fzResolveLink;
+
+  late final int Function(
+    Pointer<FzContext> ctx,
+    Pointer<FzDocument> doc,
+    FzLocation loc,
+  )
+  fzPageNumberFromLocation;
 
   // Page management
   late final Pointer<FzPage> Function(
@@ -279,29 +262,83 @@ class MuPdfBindings {
   )
   fzPixmapSamples;
 
+  late final Pointer<FzContext> Function(Pointer<FzContext> ctx) cloneContext;
+
+  late final int Function(
+    Pointer<FzContext> ctx,
+    Pointer<FzStextPage> stext,
+    Pointer<Pointer<KawiWord>> outWords,
+  )
+  kawiExtractWords;
+
+  late final void Function(Pointer<KawiWord> words) kawiFreeWords;
+
+  late final Pointer<Utf8> Function(Pointer<FzOutline> outline)
+  kawiOutlineTitle;
+
+  late final Pointer<Utf8> Function(Pointer<FzOutline> outline) kawiOutlineUri;
+
+  late final Pointer<FzOutline> Function(Pointer<FzOutline> outline)
+  kawiOutlineNext;
+
+  late final Pointer<FzOutline> Function(Pointer<FzOutline> outline)
+  kawiOutlineDown;
+
+  late final int Function(
+    Pointer<FzContext> ctx,
+    Pointer<FzDocument> doc,
+    Pointer<FzOutline> outline,
+  )
+  kawiOutlinePageNumber;
+
+  bool _hasKawiBridge = false;
+  late final Pointer<FzContext> Function() _kawiNewContext;
+  late final void Function(Pointer<FzContext> ctx) _kawiDropContext;
+
   void _init() {
-    fzNewContextImp = _dylib
-        .lookup<
-          NativeFunction<
-            Pointer<FzContext> Function(
-              Pointer<Void>,
-              Pointer<Void>,
-              IntPtr,
-              Pointer<Utf8>,
-            )
-          >
-        >('fz_new_context_imp')
-        .asFunction();
+    String sym(String kawiName, String fzName) =>
+        _dylib.providesSymbol(kawiName) ? kawiName : fzName;
+
+    _hasKawiBridge = _dylib.providesSymbol('kawi_new_context');
+    if (_hasKawiBridge) {
+      _kawiNewContext = _dylib
+          .lookup<NativeFunction<Pointer<FzContext> Function()>>(
+            'kawi_new_context',
+          )
+          .asFunction();
+      _kawiDropContext = _dylib
+          .lookup<NativeFunction<Void Function(Pointer<FzContext>)>>(
+            'kawi_drop_context',
+          )
+          .asFunction();
+    }
+
+    if (_dylib.providesSymbol('fz_new_context_imp')) {
+      fzNewContextImp = _dylib
+          .lookup<
+            NativeFunction<
+              Pointer<FzContext> Function(
+                Pointer<Void>,
+                Pointer<Void>,
+                IntPtr,
+                Pointer<Utf8>,
+              )
+            >
+          >('fz_new_context_imp')
+          .asFunction();
+    }
+
+    if (_dylib.providesSymbol('fz_register_document_handlers')) {
+      fzRegisterDocumentHandlers = _dylib
+          .lookup<NativeFunction<Void Function(Pointer<FzContext>)>>(
+            'fz_register_document_handlers',
+          )
+          .asFunction();
+    }
 
     fzDropContext = _dylib
         .lookup<NativeFunction<Void Function(Pointer<FzContext>)>>(
-          'fz_drop_context',
-        )
-        .asFunction();
-
-    fzRegisterDocumentHandlers = _dylib
-        .lookup<NativeFunction<Void Function(Pointer<FzContext>)>>(
-          'fz_register_document_handlers',
+          sym('kawi_drop_context', 'fz_drop_context'),
         )
         .asFunction();
 
@@ -310,13 +347,13 @@ class MuPdfBindings {
           NativeFunction<
             Pointer<FzDocument> Function(Pointer<FzContext>, Pointer<Utf8>)
           >
-        >('fz_open_document')
+        >(sym('kawi_open_document', 'fz_open_document'))
         .asFunction();
 
     fzDropDocument = _dylib
         .lookup<
           NativeFunction<Void Function(Pointer<FzContext>, Pointer<FzDocument>)>
-        >('fz_drop_document')
+        >(sym('kawi_drop_document', 'fz_drop_document'))
         .asFunction();
 
     fzCountPages = _dylib
@@ -324,7 +361,7 @@ class MuPdfBindings {
           NativeFunction<
             Int32 Function(Pointer<FzContext>, Pointer<FzDocument>)
           >
-        >('fz_count_pages')
+        >(sym('kawi_count_pages', 'fz_count_pages'))
         .asFunction();
 
     fzLookupMetadata = _dylib
@@ -338,7 +375,7 @@ class MuPdfBindings {
               Int32,
             )
           >
-        >('fz_lookup_metadata')
+        >(sym('kawi_lookup_metadata', 'fz_lookup_metadata'))
         .asFunction();
 
     fzLoadOutline = _dylib
@@ -346,13 +383,35 @@ class MuPdfBindings {
           NativeFunction<
             Pointer<FzOutline> Function(Pointer<FzContext>, Pointer<FzDocument>)
           >
-        >('fz_load_outline')
+        >(sym('kawi_load_outline', 'fz_load_outline'))
         .asFunction();
 
     fzDropOutline = _dylib
         .lookup<
           NativeFunction<Void Function(Pointer<FzContext>, Pointer<FzOutline>)>
-        >('fz_drop_outline')
+        >(sym('kawi_drop_outline', 'fz_drop_outline'))
+        .asFunction();
+
+    fzResolveLink = _dylib
+        .lookup<
+          NativeFunction<
+            FzLocation Function(
+              Pointer<FzContext>,
+              Pointer<FzDocument>,
+              Pointer<Utf8>,
+              Pointer<Float>,
+              Pointer<Float>,
+            )
+          >
+        >(sym('kawi_resolve_link', 'fz_resolve_link'))
+        .asFunction();
+
+    fzPageNumberFromLocation = _dylib
+        .lookup<
+          NativeFunction<
+            Int32 Function(Pointer<FzContext>, Pointer<FzDocument>, FzLocation)
+          >
+        >(sym('kawi_page_number_from_location', 'fz_page_number_from_location'))
         .asFunction();
 
     fzLoadPage = _dylib
@@ -364,13 +423,13 @@ class MuPdfBindings {
               Int32,
             )
           >
-        >('fz_load_page')
+        >(sym('kawi_load_page', 'fz_load_page'))
         .asFunction();
 
     fzDropPage = _dylib
         .lookup<
           NativeFunction<Void Function(Pointer<FzContext>, Pointer<FzPage>)>
-        >('fz_drop_page')
+        >(sym('kawi_drop_page', 'fz_drop_page'))
         .asFunction();
 
     fzNewStextPageFromPage = _dylib
@@ -382,7 +441,7 @@ class MuPdfBindings {
               Pointer<Void>,
             )
           >
-        >('fz_new_stext_page_from_page')
+        >(sym('kawi_new_stext_page_from_page', 'fz_new_stext_page_from_page'))
         .asFunction();
 
     fzDropStextPage = _dylib
@@ -390,7 +449,7 @@ class MuPdfBindings {
           NativeFunction<
             Void Function(Pointer<FzContext>, Pointer<FzStextPage>)
           >
-        >('fz_drop_stext_page')
+        >(sym('kawi_drop_stext_page', 'fz_drop_stext_page'))
         .asFunction();
 
     fzNewBufferFromStextPage = _dylib
@@ -398,7 +457,12 @@ class MuPdfBindings {
           NativeFunction<
             Pointer<FzBuffer> Function(Pointer<FzContext>, Pointer<FzStextPage>)
           >
-        >('fz_new_buffer_from_stext_page')
+        >(
+          sym(
+            'kawi_new_buffer_from_stext_page',
+            'fz_new_buffer_from_stext_page',
+          ),
+        )
         .asFunction();
 
     fzStringFromBuffer = _dylib
@@ -406,13 +470,13 @@ class MuPdfBindings {
           NativeFunction<
             Pointer<Utf8> Function(Pointer<FzContext>, Pointer<FzBuffer>)
           >
-        >('fz_string_from_buffer')
+        >(sym('kawi_string_from_buffer', 'fz_string_from_buffer'))
         .asFunction();
 
     fzDropBuffer = _dylib
         .lookup<
           NativeFunction<Void Function(Pointer<FzContext>, Pointer<FzBuffer>)>
-        >('fz_drop_buffer')
+        >(sym('kawi_drop_buffer', 'fz_drop_buffer'))
         .asFunction();
 
     fzNewPixmapFromPageNumber = _dylib
@@ -427,31 +491,36 @@ class MuPdfBindings {
               Int32,
             )
           >
-        >('fz_new_pixmap_from_page_number')
+        >(
+          sym(
+            'kawi_new_pixmap_from_page_number',
+            'fz_new_pixmap_from_page_number',
+          ),
+        )
         .asFunction();
 
     fzDropPixmap = _dylib
         .lookup<
           NativeFunction<Void Function(Pointer<FzContext>, Pointer<FzPixmap>)>
-        >('fz_drop_pixmap')
+        >(sym('kawi_drop_pixmap', 'fz_drop_pixmap'))
         .asFunction();
 
     fzDeviceRgb = _dylib
         .lookup<
           NativeFunction<Pointer<FzColorspace> Function(Pointer<FzContext>)>
-        >('fz_device_rgb')
+        >(sym('kawi_device_rgb', 'fz_device_rgb'))
         .asFunction();
 
     fzPixmapWidth = _dylib
         .lookup<
           NativeFunction<Int32 Function(Pointer<FzContext>, Pointer<FzPixmap>)>
-        >('fz_pixmap_width')
+        >(sym('kawi_pixmap_width', 'fz_pixmap_width'))
         .asFunction();
 
     fzPixmapHeight = _dylib
         .lookup<
           NativeFunction<Int32 Function(Pointer<FzContext>, Pointer<FzPixmap>)>
-        >('fz_pixmap_height')
+        >(sym('kawi_pixmap_height', 'fz_pixmap_height'))
         .asFunction();
 
     fzPixmapSamples = _dylib
@@ -459,13 +528,93 @@ class MuPdfBindings {
           NativeFunction<
             Pointer<Uint8> Function(Pointer<FzContext>, Pointer<FzPixmap>)
           >
-        >('fz_pixmap_samples')
+        >(sym('kawi_pixmap_samples', 'fz_pixmap_samples'))
         .asFunction();
+
+    if (_dylib.providesSymbol('kawi_clone_context')) {
+      cloneContext = _dylib
+          .lookup<
+            NativeFunction<Pointer<FzContext> Function(Pointer<FzContext>)>
+          >('kawi_clone_context')
+          .asFunction();
+    } else {
+      cloneContext = _dylib
+          .lookup<
+            NativeFunction<Pointer<FzContext> Function(Pointer<FzContext>)>
+          >('fz_clone_context')
+          .asFunction();
+    }
+
+    if (_dylib.providesSymbol('kawi_extract_words')) {
+      kawiExtractWords = _dylib
+          .lookup<
+            NativeFunction<
+              Int32 Function(
+                Pointer<FzContext>,
+                Pointer<FzStextPage>,
+                Pointer<Pointer<KawiWord>>,
+              )
+            >
+          >('kawi_extract_words')
+          .asFunction();
+
+      kawiFreeWords = _dylib
+          .lookup<NativeFunction<Void Function(Pointer<KawiWord>)>>(
+            'kawi_free_words',
+          )
+          .asFunction();
+    }
+
+    if (_dylib.providesSymbol('kawi_outline_title')) {
+      kawiOutlineTitle = _dylib
+          .lookup<NativeFunction<Pointer<Utf8> Function(Pointer<FzOutline>)>>(
+            'kawi_outline_title',
+          )
+          .asFunction();
+
+      kawiOutlineUri = _dylib
+          .lookup<NativeFunction<Pointer<Utf8> Function(Pointer<FzOutline>)>>(
+            'kawi_outline_uri',
+          )
+          .asFunction();
+
+      kawiOutlineNext = _dylib
+          .lookup<
+            NativeFunction<Pointer<FzOutline> Function(Pointer<FzOutline>)>
+          >('kawi_outline_next')
+          .asFunction();
+
+      kawiOutlineDown = _dylib
+          .lookup<
+            NativeFunction<Pointer<FzOutline> Function(Pointer<FzOutline>)>
+          >('kawi_outline_down')
+          .asFunction();
+
+      kawiOutlinePageNumber = _dylib
+          .lookup<
+            NativeFunction<
+              Int32 Function(
+                Pointer<FzContext>,
+                Pointer<FzDocument>,
+                Pointer<FzOutline>,
+              )
+            >
+          >('kawi_outline_page_number')
+          .asFunction();
+    }
   }
 
   /// Creates a newly initialized [FzContext] with all document handlers registered.
   /// Must be freed using [dropContext].
   Pointer<FzContext> createContext() {
+    if (_hasKawiBridge) {
+      final ctx = _kawiNewContext();
+      if (ctx == nullptr) {
+        throw StateError('Failed to initialize MuPDF context');
+      }
+      return ctx;
+    }
+
     final versionPtr = fzVersion.toNativeUtf8();
     try {
       final ctx = fzNewContextImp(nullptr, nullptr, 0, versionPtr);
@@ -481,7 +630,11 @@ class MuPdfBindings {
 
   void dropContext(Pointer<FzContext> ctx) {
     if (ctx != nullptr) {
-      fzDropContext(ctx);
+      if (_hasKawiBridge) {
+        _kawiDropContext(ctx);
+      } else {
+        fzDropContext(ctx);
+      }
     }
   }
 }

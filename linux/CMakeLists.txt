@@ -1,5 +1,9 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.13)
+
+set(CMAKE_C_COMPILER "gcc" CACHE STRING "C compiler" FORCE)
+set(CMAKE_CXX_COMPILER "g++" CACHE STRING "C++ compiler" FORCE)
+
 project(runner LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change

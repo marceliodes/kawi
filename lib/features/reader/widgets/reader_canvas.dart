@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
@@ -19,7 +20,9 @@ class ReaderCanvas extends ConsumerStatefulWidget {
     required this.settings,
     required this.initialPageIndex,
     required this.initialScrollOffset,
-    required this.scrollController,
+    this.scrollController,
+    this.itemScrollController,
+    this.itemPositionsListener,
     required this.pageController,
     required this.onPageChanged,
     required this.onToggleChrome,
@@ -31,23 +34,117 @@ class ReaderCanvas extends ConsumerStatefulWidget {
   final ReaderSettings settings;
   final int initialPageIndex;
   final double initialScrollOffset;
-  final ScrollController scrollController;
+  final ScrollController? scrollController;
+  final ItemScrollController? itemScrollController;
+  final ItemPositionsListener? itemPositionsListener;
   final PageController pageController;
   final void Function(int pageIndex, double offset) onPageChanged;
   final VoidCallback onToggleChrome;
   final ValueChanged<String>? onPlayFromHere;
 
   @override
-  ConsumerState<ReaderCanvas> createState() => _ReaderCanvasState();
+  ConsumerState<ReaderCanvas> createState() => ReaderCanvasState();
 }
 
-class _ReaderCanvasState extends ConsumerState<ReaderCanvas> {
+class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   final FocusNode _focusNode = FocusNode();
+  ItemScrollController? _internalItemScrollController;
+  ItemPositionsListener? _internalItemPositionsListener;
+
+  ItemScrollController get _effectiveItemScrollController =>
+      widget.itemScrollController ??
+      (_internalItemScrollController ??= ItemScrollController());
+
+  ItemPositionsListener get _effectiveItemPositionsListener =>
+      widget.itemPositionsListener ??
+      (_internalItemPositionsListener ??= ItemPositionsListener.create());
+
+  @override
+  void initState() {
+    super.initState();
+    _effectiveItemPositionsListener.itemPositions.addListener(
+      _onPositionsChanged,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant ReaderCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldListener =
+        oldWidget.itemPositionsListener ?? _internalItemPositionsListener;
+    final newListener =
+        widget.itemPositionsListener ?? _internalItemPositionsListener;
+    if (oldListener != newListener) {
+      oldListener?.itemPositions.removeListener(_onPositionsChanged);
+      newListener?.itemPositions.addListener(_onPositionsChanged);
+    }
+
+    if (!oldWidget.settings.isPaginated && widget.settings.isPaginated) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.pageController.hasClients) {
+          widget.pageController.jumpToPage(widget.initialPageIndex);
+        }
+      });
+    } else if (oldWidget.settings.isPaginated && !widget.settings.isPaginated) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _effectiveItemScrollController.isAttached) {
+          _effectiveItemScrollController.jumpTo(index: widget.initialPageIndex);
+        }
+      });
+    }
+  }
 
   @override
   void dispose() {
+    _effectiveItemPositionsListener.itemPositions.removeListener(
+      _onPositionsChanged,
+    );
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _onPositionsChanged() {
+    if (!mounted || widget.settings.isPaginated) return;
+
+    final positions = _effectiveItemPositionsListener.itemPositions.value;
+    if (positions.isEmpty) return;
+
+    final visible = positions
+        .where((pos) => pos.itemTrailingEdge > 0.0 && pos.itemLeadingEdge < 1.0)
+        .toList();
+    if (visible.isEmpty) return;
+
+    visible.sort((a, b) => a.itemLeadingEdge.compareTo(b.itemLeadingEdge));
+
+    ItemPosition active = visible.first;
+    if (visible.length > 1 && active.itemTrailingEdge < 0.15) {
+      active = visible[1];
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.onPageChanged(active.index, active.itemLeadingEdge);
+    });
+  }
+
+  void scrollToPage(int targetPageIndex) {
+    if (widget.settings.isPaginated) {
+      if (widget.pageController.hasClients) {
+        widget.pageController.jumpToPage(targetPageIndex);
+      }
+      return;
+    }
+
+    final controller = _effectiveItemScrollController;
+    if (controller.isAttached) {
+      controller.jumpTo(index: targetPageIndex);
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (controller.isAttached) {
+          controller.jumpTo(index: targetPageIndex);
+        }
+      });
+    }
   }
 
   @override
@@ -96,45 +193,35 @@ class _ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   Widget _buildContinuousView(ReaderThemeData theme) {
     final effectivePageCount = widget.pageCount > 0 ? widget.pageCount : 1;
 
-    return NotificationListener<ScrollNotification>(
-      onNotification: (notification) {
-        if (notification is ScrollUpdateNotification) {
-          final offset = widget.scrollController.offset;
-          // Approximate current page based on scroll percentage
-          final maxScroll = widget.scrollController.position.maxScrollExtent;
-          if (maxScroll > 0) {
-            final page = ((offset / maxScroll) * (effectivePageCount - 1))
-                .clamp(0, effectivePageCount - 1)
-                .round();
-            widget.onPageChanged(page, offset);
-          }
-        }
-        return false;
-      },
-      child: ListView.builder(
-        controller: widget.scrollController,
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.symmetric(
-          horizontal: widget.settings.horizontalPadding,
-          vertical: Spacing.xl + 40.0, // Clear top floating app bar
-        ),
-        itemCount: effectivePageCount,
-        itemBuilder: (context, index) {
-          return Center(
-            child: Container(
-              constraints: BoxConstraints(
-                maxWidth: widget.settings.contentMaxWidth,
-              ),
-              child: _PageContentWidget(
-                filePath: widget.filePath,
-                pageIndex: index,
-                settings: widget.settings,
-                onPlayFromHere: widget.onPlayFromHere,
-              ),
-            ),
-          );
-        },
+    return ScrollablePositionedList.builder(
+      itemScrollController: _effectiveItemScrollController,
+      itemPositionsListener: _effectiveItemPositionsListener,
+      initialScrollIndex: widget.initialPageIndex.clamp(
+        0,
+        effectivePageCount - 1,
       ),
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: EdgeInsets.symmetric(
+        horizontal: widget.settings.horizontalPadding,
+        vertical: Spacing.xl + 40.0, // Clear top floating app bar
+      ),
+      itemCount: effectivePageCount,
+      itemBuilder: (context, index) {
+        return Center(
+          key: ValueKey('page_$index'),
+          child: Container(
+            constraints: BoxConstraints(
+              maxWidth: widget.settings.contentMaxWidth,
+            ),
+            child: _PageContentWidget(
+              filePath: widget.filePath,
+              pageIndex: index,
+              settings: widget.settings,
+              onPlayFromHere: widget.onPlayFromHere,
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -272,32 +359,37 @@ class _PageContentWidget extends ConsumerWidget {
       data: (content) {
         final text = content.plainText.trim();
 
+        final isPaginated = settings.isPaginated;
+
         return Padding(
-          padding: const EdgeInsets.only(bottom: Spacing.xl),
+          padding: EdgeInsets.only(
+            bottom: isPaginated ? Spacing.xl : Spacing.sm,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Page marker header
-              Padding(
-                padding: const EdgeInsets.only(bottom: Spacing.sm),
-                child: Row(
-                  children: [
-                    Text(
-                      'Page ${pageIndex + 1}',
-                      style: AppTypography.micro.copyWith(
-                        color: theme.textMuted,
-                        letterSpacing: 0.5,
+              // Page marker header (only displayed in Paginated mode)
+              if (isPaginated)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: Spacing.sm),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Page ${pageIndex + 1}',
+                        style: AppTypography.micro.copyWith(
+                          color: theme.textMuted,
+                          letterSpacing: 0.5,
+                        ),
                       ),
-                    ),
-                    const Expanded(
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(horizontal: Spacing.sm),
-                        child: Divider(height: 1),
+                      const Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: Spacing.sm),
+                          child: Divider(height: 1),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
 
               if (text.isEmpty)
                 Padding(

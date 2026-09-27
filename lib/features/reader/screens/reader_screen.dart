@@ -4,6 +4,7 @@ import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/database/database_provider.dart';
@@ -28,8 +29,12 @@ class ReaderScreen extends ConsumerStatefulWidget {
 
 class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final GlobalKey<ReaderCanvasState> _canvasKey =
+      GlobalKey<ReaderCanvasState>();
   late final ScrollController _scrollController;
   late final PageController _pageController;
+  late final ItemScrollController _itemScrollController;
+  late final ItemPositionsListener _itemPositionsListener;
 
   bool _isChromeVisible = true;
   Timer? _autoHideTimer;
@@ -45,6 +50,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     super.initState();
     _scrollController = ScrollController();
     _pageController = PageController();
+    _itemScrollController = ItemScrollController();
+    _itemPositionsListener = ItemPositionsListener.create();
 
     _loadInitialProgress();
   }
@@ -76,24 +83,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         // Restore scroll or page position after layout
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
-          final settings = ref.read(readerSettingsProvider);
-          if (settings.isPaginated) {
-            if (_pageController.hasClients && _currentPageIndex > 0) {
-              _pageController.jumpToPage(_currentPageIndex);
-            }
-          } else {
-            if (_scrollController.hasClients && _currentScrollOffset > 0) {
-              _scrollController.jumpTo(_currentScrollOffset);
-            }
-          }
+          _canvasKey.currentState?.scrollToPage(_currentPageIndex);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) _isRestoring = false;
           });
         });
       }
-    } catch (e, st) {
-      // ignore: avoid_print
-      print('LOAD ERROR: $e\n$st');
+    } catch (_) {
+      // Ignored: fallback to initial page
     }
   }
 
@@ -121,14 +118,19 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   void _onPageOrScrollChanged(int pageIndex, double offset) {
     if (_isRestoring) return;
 
-    if (_currentPageIndex != pageIndex ||
-        (_currentScrollOffset - offset).abs() > 20) {
+    final pageChanged = _currentPageIndex != pageIndex;
+    final offsetChanged = (_currentScrollOffset - offset).abs() > 0.05;
+
+    if (pageChanged) {
       setState(() {
         _currentPageIndex = pageIndex;
         _currentScrollOffset = offset;
       });
 
       _resolveChapterTitle(pageIndex);
+      _debounceSaveProgress(pageIndex, offset);
+    } else if (offsetChanged) {
+      _currentScrollOffset = offset;
       _debounceSaveProgress(pageIndex, offset);
     }
   }
@@ -174,29 +176,30 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   }
 
   void _navigateToPage(int pageIndex) {
-    final settings = ref.read(readerSettingsProvider);
+    if (pageIndex < 0) return;
+    final total = widget.document.pageCount > 0 ? widget.document.pageCount : 1;
+    final clampedPage = pageIndex.clamp(0, total - 1);
+
     setState(() {
-      _currentPageIndex = pageIndex;
+      _currentPageIndex = clampedPage;
       _currentScrollOffset = 0.0;
     });
 
+    final settings = ref.read(readerSettingsProvider);
     if (settings.isPaginated) {
       if (_pageController.hasClients) {
-        _pageController.jumpToPage(pageIndex);
+        _pageController.jumpToPage(clampedPage);
       }
     } else {
-      if (_scrollController.hasClients) {
-        final maxScroll = _scrollController.position.maxScrollExtent;
-        final total = widget.document.pageCount > 0
-            ? widget.document.pageCount
-            : 1;
-        final targetOffset = (pageIndex / total) * maxScroll;
-        _scrollController.jumpTo(targetOffset);
+      if (_itemScrollController.isAttached) {
+        _itemScrollController.jumpTo(index: clampedPage);
+      } else {
+        _canvasKey.currentState?.scrollToPage(clampedPage);
       }
     }
 
-    _resolveChapterTitle(pageIndex);
-    _debounceSaveProgress(pageIndex, _currentScrollOffset);
+    _resolveChapterTitle(clampedPage);
+    _debounceSaveProgress(clampedPage, _currentScrollOffset);
   }
 
   void _openTypographySheet() {
@@ -225,6 +228,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       drawer: TocDrawer(
         filePath: widget.document.filePath,
         currentPageIndex: _currentPageIndex,
+        isPaginated: settings.isPaginated,
         onSelectPage: _navigateToPage,
       ),
       body: Stack(
@@ -244,12 +248,15 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           // Main Reading Canvas
           Positioned.fill(
             child: ReaderCanvas(
+              key: _canvasKey,
               filePath: widget.document.filePath,
               pageCount: widget.document.pageCount,
               settings: settings,
               initialPageIndex: _currentPageIndex,
               initialScrollOffset: _currentScrollOffset,
               scrollController: _scrollController,
+              itemScrollController: _itemScrollController,
+              itemPositionsListener: _itemPositionsListener,
               pageController: _pageController,
               onPageChanged: _onPageOrScrollChanged,
               onToggleChrome: _toggleChrome,
@@ -430,3 +437,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
   }
 }
+
+/// Alias for [ReaderScreen] to support both naming conventions.
+typedef DocumentViewerScreen = ReaderScreen;

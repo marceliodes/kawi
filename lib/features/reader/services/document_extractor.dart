@@ -170,9 +170,13 @@ abstract final class DocumentExtractor {
                 coverHeight = bindings.fzPixmapHeight(ctx, pixmap);
                 final sampleBytesCount = coverWidth * coverHeight * 4;
                 final samplesPtr = bindings.fzPixmapSamples(ctx, pixmap);
-                coverRgba = Uint8List.fromList(
-                  samplesPtr.asTypedList(sampleBytesCount),
-                );
+                if (samplesPtr != nullptr &&
+                    coverWidth > 0 &&
+                    coverHeight > 0) {
+                  coverRgba = Uint8List.fromList(
+                    samplesPtr.asTypedList(sampleBytesCount),
+                  );
+                }
               } finally {
                 bindings.fzDropPixmap(ctx, pixmap);
               }
@@ -219,7 +223,7 @@ abstract final class DocumentExtractor {
         }
 
         try {
-          return _parseOutlineList(outline);
+          return _parseOutlineList(bindings, ctx, doc, outline);
         } finally {
           bindings.fzDropOutline(ctx, outline);
         }
@@ -234,19 +238,33 @@ abstract final class DocumentExtractor {
     }
   }
 
-  static List<TocEntry> _parseOutlineList(Pointer<FzOutline> outline) {
+  static List<TocEntry> _parseOutlineList(
+    MuPdfBindings bindings,
+    Pointer<FzContext> ctx,
+    Pointer<FzDocument> doc,
+    Pointer<FzOutline> outline,
+  ) {
     final entries = <TocEntry>[];
     var current = outline;
 
     while (current != nullptr) {
-      final ref = current.ref;
-      final title = ref.title != nullptr ? ref.title.toDartString() : '';
-      final uri = ref.uri != nullptr ? ref.uri.toDartString() : null;
-      final pageIndex = ref.page.page;
+      final titlePtr = bindings.kawiOutlineTitle(current);
+      final uriPtr = bindings.kawiOutlineUri(current);
+      final title = titlePtr != nullptr ? titlePtr.toDartString() : '';
+      final rawUri = uriPtr != nullptr ? uriPtr.toDartString() : null;
+      final uri = rawUri != null && rawUri.isNotEmpty ? rawUri : null;
 
-      final children = ref.down != nullptr
-          ? _parseOutlineList(ref.down)
+      var pageIndex = bindings.kawiOutlinePageNumber(ctx, doc, current);
+
+      final down = bindings.kawiOutlineDown(current);
+      final children = down != nullptr
+          ? _parseOutlineList(bindings, ctx, doc, down)
           : const <TocEntry>[];
+
+      // If a container item lacks a direct target, inherit its first child's page index
+      if (pageIndex < 0 && children.isNotEmpty) {
+        pageIndex = children.first.pageIndex;
+      }
 
       entries.add(
         TocEntry(
@@ -257,7 +275,7 @@ abstract final class DocumentExtractor {
         ),
       );
 
-      current = ref.next;
+      current = bindings.kawiOutlineNext(current);
     }
 
     return entries;
@@ -277,7 +295,11 @@ abstract final class DocumentExtractor {
 
         final page = bindings.fzLoadPage(ctx, doc, pageIndex);
         if (page == nullptr) {
-          throw ArgumentError('Invalid page index: $pageIndex');
+          return PageContent(
+            pageIndex: pageIndex,
+            plainText: '',
+            words: const [],
+          );
         }
 
         try {
@@ -305,8 +327,40 @@ abstract final class DocumentExtractor {
               }
             }
 
-            // 2. Structured word coordinates
-            final words = _extractWordsFromStext(stextPage);
+            // 2. Structured word coordinates via safe native C extraction
+            final words = <WordBounds>[];
+            final wordsPtrPtr = calloc<Pointer<KawiWord>>();
+            try {
+              final count = bindings.kawiExtractWords(
+                ctx,
+                stextPage,
+                wordsPtrPtr,
+              );
+              final wordsPtr = wordsPtrPtr.value;
+              if (wordsPtr != nullptr && count > 0) {
+                try {
+                  for (var i = 0; i < count; i++) {
+                    final kw = wordsPtr[i];
+                    final wordText = kw.wordString.trim();
+                    if (wordText.isNotEmpty) {
+                      words.add(
+                        WordBounds(
+                          word: wordText,
+                          x0: kw.x0,
+                          y0: kw.y0,
+                          x1: kw.x1,
+                          y1: kw.y1,
+                        ),
+                      );
+                    }
+                  }
+                } finally {
+                  bindings.kawiFreeWords(wordsPtr);
+                }
+              }
+            } finally {
+              calloc.free(wordsPtrPtr);
+            }
 
             return PageContent(
               pageIndex: pageIndex,
@@ -328,96 +382,5 @@ abstract final class DocumentExtractor {
     } finally {
       bindings.dropContext(ctx);
     }
-  }
-
-  static List<WordBounds> _extractWordsFromStext(
-    Pointer<FzStextPage> stextPage,
-  ) {
-    final words = <WordBounds>[];
-    final structPtr = stextPage.cast<FzStextPageStruct>();
-    var blockPtr = structPtr.ref.firstBlock;
-
-    while (blockPtr != nullptr) {
-      final block = blockPtr.ref;
-      if (block.type == 0) {
-        // Text block
-        var linePtr = block.firstLine;
-        while (linePtr != nullptr) {
-          final line = linePtr.ref;
-          var charPtr = line.firstChar;
-
-          final currentWordChars = <int>[];
-          double wordX0 = double.infinity;
-          double wordY0 = double.infinity;
-          double wordX1 = -double.infinity;
-          double wordY1 = -double.infinity;
-
-          void flushWord() {
-            if (currentWordChars.isNotEmpty) {
-              final wordStr = String.fromCharCodes(currentWordChars).trim();
-              if (wordStr.isNotEmpty) {
-                words.add(
-                  WordBounds(
-                    word: wordStr,
-                    x0: wordX0,
-                    y0: wordY0,
-                    x1: wordX1,
-                    y1: wordY1,
-                  ),
-                );
-              }
-              currentWordChars.clear();
-              wordX0 = double.infinity;
-              wordY0 = double.infinity;
-              wordX1 = -double.infinity;
-              wordY1 = -double.infinity;
-            }
-          }
-
-          while (charPtr != nullptr) {
-            final ch = charPtr.ref;
-            final c = ch.c;
-
-            if (c <= 32) {
-              // Space or whitespace delimiter
-              flushWord();
-            } else {
-              currentWordChars.add(c);
-              final q = ch.quad;
-              final minX = _min4(q.ul.x, q.ur.x, q.ll.x, q.lr.x);
-              final maxX = _max4(q.ul.x, q.ur.x, q.ll.x, q.lr.x);
-              final minY = _min4(q.ul.y, q.ur.y, q.ll.y, q.lr.y);
-              final maxY = _max4(q.ul.y, q.ur.y, q.ll.y, q.lr.y);
-
-              if (minX < wordX0) wordX0 = minX;
-              if (minY < wordY0) wordY0 = minY;
-              if (maxX > wordX1) wordX1 = maxX;
-              if (maxY > wordY1) wordY1 = maxY;
-            }
-            charPtr = ch.next;
-          }
-          flushWord();
-
-          linePtr = line.next;
-        }
-      }
-      blockPtr = block.next;
-    }
-
-    return words;
-  }
-
-  static double _min4(double a, double b, double c, double d) {
-    double m = a < b ? a : b;
-    if (c < m) m = c;
-    if (d < m) m = d;
-    return m;
-  }
-
-  static double _max4(double a, double b, double c, double d) {
-    double m = a > b ? a : b;
-    if (c > m) m = c;
-    if (d > m) m = d;
-    return m;
   }
 }

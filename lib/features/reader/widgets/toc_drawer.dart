@@ -6,6 +6,7 @@ import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
 import '../providers/document_content_provider.dart';
+import '../providers/reader_settings_provider.dart';
 import '../services/document_extractor.dart';
 
 class TocDrawer extends ConsumerStatefulWidget {
@@ -14,11 +15,13 @@ class TocDrawer extends ConsumerStatefulWidget {
     required this.filePath,
     required this.currentPageIndex,
     required this.onSelectPage,
+    this.isPaginated,
   });
 
   final String filePath;
   final int currentPageIndex;
   final ValueChanged<int> onSelectPage;
+  final bool? isPaginated;
 
   @override
   ConsumerState<TocDrawer> createState() => _TocDrawerState();
@@ -38,6 +41,8 @@ class _TocDrawerState extends ConsumerState<TocDrawer> {
   Widget build(BuildContext context) {
     final theme = ReaderTheme.of(context);
     final tocAsync = ref.watch(documentTocProvider(widget.filePath));
+    final settings = ref.watch(readerSettingsProvider);
+    final showPageNumbers = widget.isPaginated ?? settings.isPaginated;
 
     return Drawer(
       backgroundColor: theme.bgCard,
@@ -197,17 +202,25 @@ class _TocDrawerState extends ConsumerState<TocDrawer> {
                     );
                   }
 
+                  _FlattenedTocItem? currentItem;
+                  for (final it in flattened) {
+                    if (it.entry.pageIndex >= 0 &&
+                        it.entry.pageIndex <= widget.currentPageIndex) {
+                      currentItem = it;
+                    }
+                  }
+
                   return ListView.builder(
                     itemCount: flattened.length,
                     itemBuilder: (context, index) {
                       final item = flattened[index];
-                      final isCurrent =
-                          item.entry.pageIndex == widget.currentPageIndex;
+                      final isCurrent = item == currentItem;
 
                       return _buildTocRow(
                         theme: theme,
                         item: item,
                         isCurrent: isCurrent,
+                        showPageNumbers: showPageNumbers,
                       );
                     },
                   );
@@ -224,10 +237,13 @@ class _TocDrawerState extends ConsumerState<TocDrawer> {
     required ReaderThemeData theme,
     required _FlattenedTocItem item,
     required bool isCurrent,
+    required bool showPageNumbers,
   }) {
     return InkWell(
       onTap: () {
-        widget.onSelectPage(item.entry.pageIndex);
+        if (item.entry.pageIndex >= 0) {
+          widget.onSelectPage(item.entry.pageIndex);
+        }
         Navigator.of(context).pop();
       },
       child: Container(
@@ -249,7 +265,9 @@ class _TocDrawerState extends ConsumerState<TocDrawer> {
               child: Text(
                 item.entry.title.isNotEmpty
                     ? item.entry.title
-                    : 'Chapter ${item.entry.pageIndex + 1}',
+                    : (item.entry.pageIndex >= 0
+                          ? 'Chapter ${item.entry.pageIndex + 1}'
+                          : 'Section'),
                 style: AppTypography.body.copyWith(
                   color: isCurrent ? theme.accent : theme.textPrimary,
                   fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w400,
@@ -258,14 +276,16 @@ class _TocDrawerState extends ConsumerState<TocDrawer> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            const SizedBox(width: Spacing.xs),
-            Text(
-              '${item.entry.pageIndex + 1}',
-              style: AppTypography.micro.copyWith(
-                color: isCurrent ? theme.accent : theme.textMuted,
-                fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+            if (showPageNumbers && item.entry.pageIndex >= 0) ...[
+              const SizedBox(width: Spacing.xs),
+              Text(
+                '${item.entry.pageIndex + 1}',
+                style: AppTypography.micro.copyWith(
+                  color: isCurrent ? theme.accent : theme.textMuted,
+                  fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),

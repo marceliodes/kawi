@@ -34,6 +34,12 @@ fi
 
 cd "${SOURCE_DIR}"
 
+# Integrate Kawi exception-safe C bridge into Fitz
+if [ -f "${ROOT_DIR}/native/src/mupdf_bridge.c" ]; then
+  echo "Integrating Kawi C bridge..."
+  cp -f "${ROOT_DIR}/native/src/mupdf_bridge.c" "source/fitz/mupdf_bridge.c"
+fi
+
 # Build shared library with release flags
 echo "Compiling MuPDF shared library (release)..."
 NPROC=$(nproc || echo 4)
