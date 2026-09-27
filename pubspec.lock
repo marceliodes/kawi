@@ -266,7 +266,7 @@ packages:
     source: hosted
     version: "2.1.2"
   file_picker_linux:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: file_picker_linux
       sha256: e7db600f50672ce5ebbe422ac0906e0f3d2a476188cc93e7126afee12bf08063

@@ -12,10 +12,18 @@ import '../providers/library_provider.dart';
 import 'typeset_book_jacket.dart';
 
 class BookCard extends ConsumerWidget {
-  const BookCard({required this.document, this.onTap, super.key});
+  const BookCard({
+    required this.document,
+    this.onTap,
+    this.onRemoveFromShelf,
+    this.shelfName,
+    super.key,
+  });
 
   final DocumentEntry document;
   final VoidCallback? onTap;
+  final VoidCallback? onRemoveFromShelf;
+  final String? shelfName;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -32,6 +40,10 @@ class BookCard extends ConsumerWidget {
         borderRadius: BorderRadius.circular(Radii.md),
         hoverColor: theme.hoverOverlay,
         onTap: onTap,
+        onSecondaryTapUp: onRemoveFromShelf != null
+            ? (details) =>
+                  _showContextMenu(context, details.globalPosition, theme)
+            : null,
         child: Padding(
           padding: const EdgeInsets.all(Spacing.xs),
           child: Column(
@@ -40,35 +52,50 @@ class BookCard extends ConsumerWidget {
               // Cover area with 2:3 aspect ratio
               AspectRatio(
                 aspectRatio: 2 / 3,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(Radii.sm),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.08),
-                        blurRadius: 6,
-                        offset: const Offset(0, 2),
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(Radii.sm),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.08),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(Radii.sm),
+                          child: hasCoverFile
+                              ? Image.file(
+                                  File(document.coverPath!),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) {
+                                    return TypesetBookJacket(
+                                      title: document.title,
+                                      author: document.author,
+                                    );
+                                  },
+                                )
+                              : TypesetBookJacket(
+                                  title: document.title,
+                                  author: document.author,
+                                ),
+                        ),
                       ),
-                    ],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(Radii.sm),
-                    child: hasCoverFile
-                        ? Image.file(
-                            File(document.coverPath!),
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) {
-                              return TypesetBookJacket(
-                                title: document.title,
-                                author: document.author,
-                              );
-                            },
-                          )
-                        : TypesetBookJacket(
-                            title: document.title,
-                            author: document.author,
-                          ),
-                  ),
+                    ),
+                    if (onRemoveFromShelf != null)
+                      Positioned(
+                        top: Spacing.xxs,
+                        right: Spacing.xxs,
+                        child: _CardMenuButton(
+                          onRemoveFromShelf: onRemoveFromShelf!,
+                          shelfName: shelfName,
+                        ),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(height: Spacing.xs),
@@ -166,6 +193,122 @@ class BookCard extends ConsumerWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  void _showContextMenu(
+    BuildContext context,
+    Offset position,
+    ReaderThemeData theme,
+  ) {
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        position & const Size(40, 40),
+        Offset.zero & overlay.size,
+      ),
+      color: theme.bgCard,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.sm),
+        side: BorderSide(color: theme.borderSubtle),
+      ),
+      items: [
+        PopupMenuItem<String>(
+          value: 'remove',
+          child: Row(
+            children: [
+              const PhosphorIcon(
+                PhosphorIconsLight.folderMinus,
+                size: 16,
+                color: Colors.redAccent,
+              ),
+              const SizedBox(width: Spacing.xs),
+              Text(
+                shelfName != null
+                    ? 'Remove from $shelfName'
+                    : 'Remove from Shelf',
+                style: AppTypography.body.copyWith(
+                  color: Colors.redAccent,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ).then((value) {
+      if (value == 'remove') {
+        onRemoveFromShelf?.call();
+      }
+    });
+  }
+}
+
+class _CardMenuButton extends StatelessWidget {
+  const _CardMenuButton({required this.onRemoveFromShelf, this.shelfName});
+
+  final VoidCallback onRemoveFromShelf;
+  final String? shelfName;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = ReaderTheme.of(context);
+
+    return Material(
+      color: Colors.black.withValues(alpha: 0.55),
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: PopupMenuButton<String>(
+        tooltip: 'Document options',
+        padding: EdgeInsets.zero,
+        iconSize: 16,
+        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        icon: const PhosphorIcon(
+          PhosphorIconsLight.dotsThreeVertical,
+          size: 14,
+          color: Colors.white,
+        ),
+        color: theme.bgCard,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Radii.sm),
+          side: BorderSide(color: theme.borderSubtle),
+        ),
+        onSelected: (val) {
+          if (val == 'remove') {
+            onRemoveFromShelf();
+          }
+        },
+        itemBuilder: (context) => [
+          PopupMenuItem<String>(
+            value: 'remove',
+            child: Row(
+              children: [
+                const PhosphorIcon(
+                  PhosphorIconsLight.folderMinus,
+                  size: 16,
+                  color: Colors.redAccent,
+                ),
+                const SizedBox(width: Spacing.xs),
+                Text(
+                  shelfName != null
+                      ? 'Remove from $shelfName'
+                      : 'Remove from Shelf',
+                  style: AppTypography.body.copyWith(
+                    color: Colors.redAccent,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

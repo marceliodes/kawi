@@ -33,9 +33,13 @@ class _KawiShellState extends ConsumerState<KawiShell> {
       onDragDone: (details) async {
         setState(() => _isDragging = false);
         final paths = details.files.map((f) => f.path);
+        final activeFilter = ref.read(libraryFilterProvider);
+        final shelfId = activeFilter.category == LibraryFilterCategory.shelf
+            ? activeFilter.shelfId
+            : null;
         try {
           final service = ref.read(ingestionServiceProvider);
-          await service.ingestFiles(paths);
+          await service.ingestFiles(paths, shelfId: shelfId);
         } catch (e) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(

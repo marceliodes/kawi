@@ -65,4 +65,29 @@ void main() {
     final stored = await db.watchAllDocuments().first;
     expect(stored.length, 1);
   });
+
+  test(
+    'ingests files and automatically assigns them to shelf if shelfId provided',
+    () async {
+      final pdfFile = File('test_assets/sample.pdf');
+      if (!pdfFile.existsSync()) return;
+
+      await db.insertShelf(
+        ShelvesCompanion.insert(
+          id: 'shelf-fantasy',
+          name: 'Fantasy',
+          createdAt: DateTime.now(),
+        ),
+      );
+
+      final docs = await service.ingestFiles([
+        pdfFile.path,
+      ], shelfId: 'shelf-fantasy');
+      expect(docs.length, 1);
+
+      final shelfDocs = await db.watchDocumentsInShelf('shelf-fantasy').first;
+      expect(shelfDocs.length, 1);
+      expect(shelfDocs.first.id, docs.first.id);
+    },
+  );
 }

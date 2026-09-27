@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:file_picker_linux/file_picker_linux.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/services/platform_window_service.dart';
 import '../../../core/utils/bmp_encoder.dart';
 import '../../reader/services/document_extractor.dart';
 
@@ -18,10 +20,21 @@ class DocumentIngestionService {
   static const supportedExtensions = {'.epub', '.pdf', '.mobi', '.azw'};
 
   /// Opens the native system file picker and ingests selected documents.
-  Future<List<DocumentEntry>> pickAndIngestDocuments() async {
+  /// If [shelfId] is specified, documents are automatically added to that shelf.
+  Future<List<DocumentEntry>> pickAndIngestDocuments({String? shelfId}) async {
+    String? parentWindow;
+    if (Platform.isLinux) {
+      parentWindow = await PlatformWindowService.getWindowHandle();
+    }
+
     final files = await FilePicker.pickFiles(
+      dialogTitle: 'Import Documents',
       type: FileType.custom,
       allowedExtensions: ['epub', 'pdf', 'mobi', 'azw'],
+      linuxOptions: FilePickerLinuxOptions(
+        parentWindow: parentWindow,
+        lockParentWindow: true,
+      ),
     );
 
     if (files.isEmpty) {
@@ -29,11 +42,15 @@ class DocumentIngestionService {
     }
 
     final filePaths = files.map((f) => f.path).whereType<String>();
-    return ingestFiles(filePaths);
+    return ingestFiles(filePaths, shelfId: shelfId);
   }
 
   /// Ingests a collection of file paths (from drag-and-drop or file picker).
-  Future<List<DocumentEntry>> ingestFiles(Iterable<String> paths) async {
+  /// If [shelfId] is specified, documents are also added to that shelf.
+  Future<List<DocumentEntry>> ingestFiles(
+    Iterable<String> paths, {
+    String? shelfId,
+  }) async {
     final ingested = <DocumentEntry>[];
 
     for (final rawPath in paths) {
@@ -46,6 +63,9 @@ class DocumentIngestionService {
       final doc = await ingestSingleFile(file);
       if (doc != null) {
         ingested.add(doc);
+        if (shelfId != null) {
+          await _database.addDocumentToShelf(doc.id, shelfId);
+        }
       }
     }
 

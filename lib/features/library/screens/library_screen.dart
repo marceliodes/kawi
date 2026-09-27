@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
+import '../../../core/database/app_database.dart';
+import '../../../core/database/database_provider.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
 import '../providers/library_provider.dart';
+import '../widgets/add_from_library_dialog.dart';
 import '../widgets/book_card.dart';
 
 class LibraryScreen extends ConsumerWidget {
@@ -42,16 +45,21 @@ class LibraryScreen extends ConsumerWidget {
     LibraryFilterState filter,
   ) {
     final isFiltered = filter.category != LibraryFilterCategory.all;
+    final isShelf =
+        filter.category == LibraryFilterCategory.shelf &&
+        filter.shelfId != null;
 
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          PhosphorIcon(
-            PhosphorIconsLight.books,
-            size: 64,
-            color: theme.textMuted,
-          ),
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            PhosphorIcon(
+              PhosphorIconsLight.books,
+              size: 64,
+              color: theme.textMuted,
+            ),
           const SizedBox(height: Spacing.lg),
           Text(
             isFiltered ? 'No documents in this view' : 'Your library is empty',
@@ -65,25 +73,76 @@ class LibraryScreen extends ConsumerWidget {
             style: AppTypography.body.copyWith(color: theme.textMuted),
           ),
           const SizedBox(height: Spacing.xl),
-          FilledButton.icon(
-            onPressed: () => _importDocuments(context, ref),
-            icon: const PhosphorIcon(PhosphorIconsLight.plus, size: 18),
-            label: const Text('Import Document'),
-            style: FilledButton.styleFrom(
-              backgroundColor: theme.accent,
-              foregroundColor: theme.isDark ? Colors.black : Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(Radii.sm),
-              ),
-              padding: const EdgeInsets.symmetric(
-                horizontal: Spacing.lg,
-                vertical: Spacing.sm,
+          if (isShelf)
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: Spacing.sm,
+              runSpacing: Spacing.sm,
+              children: [
+                FilledButton.icon(
+                  onPressed: () => _openAddFromLibraryDialog(
+                    context,
+                    ref,
+                    filter.shelfId!,
+                    filter.shelfName ?? 'Shelf',
+                  ),
+                  icon: const PhosphorIcon(PhosphorIconsLight.books, size: 18),
+                  label: const Text('Add from Library'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: theme.accent,
+                    foregroundColor: theme.isDark ? Colors.black : Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(Radii.sm),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Spacing.md,
+                      vertical: Spacing.sm,
+                    ),
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: () =>
+                      _importDocuments(context, ref, shelfId: filter.shelfId),
+                  icon: const PhosphorIcon(
+                    PhosphorIconsLight.folderSimplePlus,
+                    size: 18,
+                  ),
+                  label: const Text('Import from Disk'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: theme.accent.withValues(alpha: 0.15),
+                    foregroundColor: theme.accent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(Radii.sm),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Spacing.md,
+                      vertical: Spacing.sm,
+                    ),
+                  ),
+                ),
+              ],
+            )
+          else
+            FilledButton.icon(
+              onPressed: () => _importDocuments(context, ref),
+              icon: const PhosphorIcon(PhosphorIconsLight.plus, size: 18),
+              label: const Text('Import Document'),
+              style: FilledButton.styleFrom(
+                backgroundColor: theme.accent,
+                foregroundColor: theme.isDark ? Colors.black : Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(Radii.sm),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Spacing.lg,
+                  vertical: Spacing.sm,
+                ),
               ),
             ),
-          ),
         ],
       ),
-    );
+    ),
+  );
   }
 
   Widget _buildDocumentGrid(
@@ -91,7 +150,7 @@ class LibraryScreen extends ConsumerWidget {
     WidgetRef ref,
     ReaderThemeData theme,
     LibraryFilterState filter,
-    List<dynamic> documents,
+    List<DocumentEntry> documents,
   ) {
     final title = switch (filter.category) {
       LibraryFilterCategory.all => 'All Documents',
@@ -99,6 +158,9 @@ class LibraryScreen extends ConsumerWidget {
       LibraryFilterCategory.completed => 'Completed',
       LibraryFilterCategory.shelf => filter.shelfName ?? 'Shelf',
     };
+    final isShelf =
+        filter.category == LibraryFilterCategory.shelf &&
+        filter.shelfId != null;
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -111,41 +173,104 @@ class LibraryScreen extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Top Bar with Section Title and Import Action
-            Row(
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: Spacing.sm,
+              runSpacing: Spacing.xs,
               children: [
-                Text(
-                  title,
-                  style: AppTypography.headline.copyWith(
-                    color: theme.textPrimary,
-                  ),
-                ),
-                const SizedBox(width: Spacing.xs),
-                Text(
-                  '(${documents.length})',
-                  style: AppTypography.headline.copyWith(
-                    color: theme.textMuted,
-                  ),
-                ),
-                const Spacer(),
-                FilledButton.tonalIcon(
-                  onPressed: () => _importDocuments(context, ref),
-                  icon: const PhosphorIcon(
-                    PhosphorIconsLight.folderSimplePlus,
-                    size: 16,
-                  ),
-                  label: const Text('Import'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: theme.accent.withValues(alpha: 0.15),
-                    foregroundColor: theme.accent,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(Radii.sm),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: AppTypography.headline.copyWith(
+                        color: theme.textPrimary,
+                      ),
                     ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: Spacing.md,
-                      vertical: Spacing.xs,
+                    const SizedBox(width: Spacing.xs),
+                    Text(
+                      '(${documents.length})',
+                      style: AppTypography.headline.copyWith(
+                        color: theme.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+                if (isShelf)
+                  Wrap(
+                    spacing: Spacing.xs,
+                    runSpacing: Spacing.xs,
+                    children: [
+                      FilledButton.tonalIcon(
+                        onPressed: () => _openAddFromLibraryDialog(
+                          context,
+                          ref,
+                          filter.shelfId!,
+                          filter.shelfName ?? 'Shelf',
+                        ),
+                        icon: const PhosphorIcon(
+                          PhosphorIconsLight.books,
+                          size: 16,
+                        ),
+                        label: const Text('Add from Library'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: theme.accent.withValues(alpha: 0.15),
+                          foregroundColor: theme.accent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(Radii.sm),
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: Spacing.md,
+                            vertical: Spacing.xs,
+                          ),
+                        ),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () => _importDocuments(
+                          context,
+                          ref,
+                          shelfId: filter.shelfId,
+                        ),
+                        icon: const PhosphorIcon(
+                          PhosphorIconsLight.folderSimplePlus,
+                          size: 16,
+                        ),
+                        label: const Text('Import from Disk'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: theme.accent.withValues(alpha: 0.15),
+                          foregroundColor: theme.accent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(Radii.sm),
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: Spacing.md,
+                            vertical: Spacing.xs,
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  FilledButton.tonalIcon(
+                    onPressed: () => _importDocuments(context, ref),
+                    icon: const PhosphorIcon(
+                      PhosphorIconsLight.folderSimplePlus,
+                      size: 16,
+                    ),
+                    label: const Text('Import'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: theme.accent.withValues(alpha: 0.15),
+                      foregroundColor: theme.accent,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(Radii.sm),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: Spacing.md,
+                        vertical: Spacing.xs,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
             const SizedBox(height: Spacing.md),
@@ -164,6 +289,16 @@ class LibraryScreen extends ConsumerWidget {
                   final doc = documents[index];
                   return BookCard(
                     document: doc,
+                    shelfName: isShelf ? filter.shelfName : null,
+                    onRemoveFromShelf: isShelf && filter.shelfId != null
+                        ? () => _removeDocumentFromShelf(
+                            context,
+                            ref,
+                            doc,
+                            filter.shelfId!,
+                            filter.shelfName ?? 'Shelf',
+                          )
+                        : null,
                     onTap: () {
                       // Reader integration will be hooked up in next phase
                     },
@@ -177,10 +312,77 @@ class LibraryScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _importDocuments(BuildContext context, WidgetRef ref) async {
+  void _openAddFromLibraryDialog(
+    BuildContext context,
+    WidgetRef ref,
+    String shelfId,
+    String shelfName,
+  ) async {
+    final count = await showDialog<int>(
+      context: context,
+      builder: (context) => AddFromLibraryDialog(
+        shelfId: shelfId,
+        shelfName: shelfName,
+        onImportFromDisk: () =>
+            _importDocuments(context, ref, shelfId: shelfId),
+      ),
+    );
+    if (count != null && count > 0 && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Added $count document${count == 1 ? '' : 's'} to $shelfName',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _removeDocumentFromShelf(
+    BuildContext context,
+    WidgetRef ref,
+    DocumentEntry doc,
+    String shelfId,
+    String shelfName,
+  ) async {
+    try {
+      final db = ref.read(databaseProvider);
+      await db.removeDocumentFromShelf(doc.id, shelfId);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Removed "${doc.title}" from $shelfName')),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to remove document from shelf: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _importDocuments(
+    BuildContext context,
+    WidgetRef ref, {
+    String? shelfId,
+  }) async {
     try {
       final service = ref.read(ingestionServiceProvider);
-      await service.pickAndIngestDocuments();
+      final imported = await service.pickAndIngestDocuments(shelfId: shelfId);
+      if (imported.isNotEmpty && context.mounted) {
+        final shelfName = ref.read(libraryFilterProvider).shelfName;
+        final target = shelfId != null && shelfName != null
+            ? ' and added to $shelfName'
+            : '';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Imported ${imported.length} document${imported.length == 1 ? '' : 's'}$target',
+            ),
+          ),
+        );
+      }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

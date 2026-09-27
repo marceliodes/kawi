@@ -114,6 +114,20 @@ class AppDatabase extends _$AppDatabase {
         .go();
   }
 
+  Future<List<DocumentEntry>> getDocumentsNotInShelf(String shelfId) async {
+    final assignedDocs = await (select(
+      documentShelves,
+    )..where((t) => t.shelfId.equals(shelfId))).get();
+    final assignedIds = assignedDocs.map((d) => d.documentId).toSet();
+    final all =
+        await (select(documents)..orderBy([
+              (t) =>
+                  OrderingTerm(expression: t.addedAt, mode: OrderingMode.desc),
+            ]))
+            .get();
+    return all.where((d) => !assignedIds.contains(d.id)).toList();
+  }
+
   Stream<ReadingProgress?> watchProgressForDocument(String documentId) {
     return (select(
       readingProgresses,
