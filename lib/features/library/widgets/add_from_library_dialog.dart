@@ -99,7 +99,12 @@ class _AddFromLibraryDialogState extends ConsumerState<AddFromLibraryDialog> {
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return Center(
-                        child: CircularProgressIndicator(color: theme.accent),
+                        child: Text(
+                          'Loading documents...',
+                          style: AppTypography.body.copyWith(
+                            color: theme.textMuted,
+                          ),
+                        ),
                       );
                     }
 
@@ -332,8 +337,9 @@ class _AddFromLibraryDialogState extends ConsumerState<AddFromLibraryDialog> {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
-                    onPressed:
-                        _isAdding ? null : () => Navigator.of(context).pop(0),
+                    onPressed: _isAdding
+                        ? null
+                        : () => Navigator.of(context).pop(0),
                     child: Text(
                       'Cancel',
                       style: TextStyle(color: theme.textMuted),

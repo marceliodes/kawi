@@ -10,6 +10,7 @@ class ReadingProgresses extends Table {
       integer().withDefault(const Constant(0))();
   RealColumn get lastReadScrollOffset =>
       real().withDefault(const Constant(0.0))();
+  TextColumn get currentChapter => text().nullable()();
   DateTimeColumn get updatedAt => dateTime()();
 
   @override

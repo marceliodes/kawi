@@ -5,6 +5,7 @@ import 'package:drift/native.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'tables/app_settings.dart';
 import 'tables/document_shelves.dart';
 import 'tables/documents.dart';
 import 'tables/reading_progress.dart';
@@ -12,12 +13,27 @@ import 'tables/shelves.dart';
 
 part 'app_database.g.dart';
 
-@DriftDatabase(tables: [Documents, ReadingProgresses, Shelves, DocumentShelves])
+@DriftDatabase(
+  tables: [Documents, ReadingProgresses, Shelves, DocumentShelves, AppSettings],
+)
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? e]) : super(e ?? _openConnection());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (m) async {
+      await m.createAll();
+    },
+    onUpgrade: (m, from, to) async {
+      if (from < 2) {
+        await m.createTable(appSettings);
+        await m.addColumn(readingProgresses, readingProgresses.currentChapter);
+      }
+    },
+  );
 
   Stream<List<DocumentEntry>> watchAllDocuments() {
     return (select(documents)..orderBy([
@@ -134,8 +150,36 @@ class AppDatabase extends _$AppDatabase {
     )..where((t) => t.documentId.equals(documentId))).watchSingleOrNull();
   }
 
+  Future<ReadingProgress?> getProgressForDocument(String documentId) {
+    return (select(
+      readingProgresses,
+    )..where((t) => t.documentId.equals(documentId))).getSingleOrNull();
+  }
+
   Future<void> updateProgress(ReadingProgressesCompanion progress) {
     return into(readingProgresses).insertOnConflictUpdate(progress);
+  }
+
+  Future<String?> getSetting(String key) async {
+    final query = select(appSettings)..where((t) => t.key.equals(key));
+    final row = await query.getSingleOrNull();
+    return row?.value;
+  }
+
+  Stream<String?> watchSetting(String key) {
+    final query = select(appSettings)..where((t) => t.key.equals(key));
+    return query.watchSingleOrNull().map((row) => row?.value);
+  }
+
+  Future<void> setSetting(String key, String value) {
+    return into(appSettings).insertOnConflictUpdate(
+      AppSettingsCompanion(key: Value(key), value: Value(value)),
+    );
+  }
+
+  Future<Map<String, String>> getAllSettings() async {
+    final rows = await select(appSettings).get();
+    return {for (final row in rows) row.key: row.value};
   }
 }
 
