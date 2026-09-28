@@ -11,6 +11,8 @@ import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
 import '../models/reader_settings.dart';
 import '../providers/document_content_provider.dart';
+import '../../tts/models/tts_models.dart';
+import '../../tts/providers/tts_provider.dart';
 
 class ReaderCanvas extends ConsumerStatefulWidget {
   const ReaderCanvas({
@@ -404,15 +406,19 @@ class _PageContentWidget extends ConsumerWidget {
                   ),
                 )
               else
-                SelectableText(
-                  text,
-                  textAlign: TextAlign.start,
-                  style: TextStyle(
-                    fontFamily: settings.fontFamily,
-                    fontSize: settings.fontSize,
-                    height: settings.lineHeight,
-                    color: theme.textPrimary,
+                SelectableText.rich(
+                  _buildHighlightedTextSpan(
+                    text: text,
+                    baseStyle: TextStyle(
+                      fontFamily: settings.fontFamily,
+                      fontSize: settings.fontSize,
+                      height: settings.lineHeight,
+                      color: theme.textPrimary,
+                    ),
+                    theme: theme,
+                    ttsState: ref.watch(ttsStateProvider),
                   ),
+                  textAlign: TextAlign.start,
                   contextMenuBuilder: (context, editableTextState) {
                     return _buildContextMenu(context, editableTextState, theme);
                   },
@@ -421,6 +427,68 @@ class _PageContentWidget extends ConsumerWidget {
           ),
         );
       },
+    );
+  }
+
+  TextSpan _buildHighlightedTextSpan({
+    required String text,
+    required TextStyle baseStyle,
+    required ReaderThemeData theme,
+    required TtsState ttsState,
+  }) {
+    if ((!ttsState.isPlaying && !ttsState.isPaused) ||
+        ttsState.currentSentenceText.trim().isEmpty) {
+      return TextSpan(text: text, style: baseStyle);
+    }
+
+    final sentence = ttsState.currentSentenceText.trim();
+    final matchIndex = text.indexOf(sentence);
+    if (matchIndex == -1) {
+      return TextSpan(text: text, style: baseStyle);
+    }
+
+    final before = text.substring(0, matchIndex);
+    final match = text.substring(matchIndex, matchIndex + sentence.length);
+    final after = text.substring(matchIndex + sentence.length);
+
+    final sentenceHighlightStyle = baseStyle.copyWith(
+      backgroundColor: theme.accent.withValues(alpha: 0.18),
+    );
+
+    InlineSpan sentenceSpan;
+    if (ttsState.currentWord.isNotEmpty &&
+        ttsState.activeWordStart >= 0 &&
+        ttsState.activeWordEnd <= match.length &&
+        ttsState.activeWordStart < ttsState.activeWordEnd) {
+      final wBefore = match.substring(0, ttsState.activeWordStart);
+      final wWord = match.substring(ttsState.activeWordStart, ttsState.activeWordEnd);
+      final wAfter = match.substring(ttsState.activeWordEnd);
+
+      sentenceSpan = TextSpan(
+        style: sentenceHighlightStyle,
+        children: [
+          if (wBefore.isNotEmpty) TextSpan(text: wBefore),
+          TextSpan(
+            text: wWord,
+            style: sentenceHighlightStyle.copyWith(
+              backgroundColor: theme.accent.withValues(alpha: 0.38),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (wAfter.isNotEmpty) TextSpan(text: wAfter),
+        ],
+      );
+    } else {
+      sentenceSpan = TextSpan(text: match, style: sentenceHighlightStyle);
+    }
+
+    return TextSpan(
+      style: baseStyle,
+      children: [
+        if (before.isNotEmpty) TextSpan(text: before),
+        sentenceSpan,
+        if (after.isNotEmpty) TextSpan(text: after),
+      ],
     );
   }
 

@@ -17,6 +17,11 @@ import '../services/document_extractor.dart';
 import '../widgets/reader_canvas.dart';
 import '../widgets/toc_drawer.dart';
 import '../widgets/typography_settings_sheet.dart';
+import '../widgets/tts_control_bar.dart';
+import '../../tts/models/tts_models.dart';
+import '../../tts/providers/tts_provider.dart';
+import '../../tts/providers/voice_manager_provider.dart';
+import '../../tts/screens/voice_manager_screen.dart';
 
 class ReaderScreen extends ConsumerStatefulWidget {
   const ReaderScreen({super.key, required this.document});
@@ -37,6 +42,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   late final ItemPositionsListener _itemPositionsListener;
 
   bool _isChromeVisible = true;
+  bool _isTtsBarVisible = false;
   Timer? _autoHideTimer;
   Timer? _progressSaveDebounce;
 
@@ -211,10 +217,70 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
   }
 
+  Future<void> _startTts({String? fromSentence}) async {
+    try {
+      final pageContent = await ref.read(
+        documentPageContentProvider((
+          filePath: widget.document.filePath,
+          pageIndex: _currentPageIndex,
+        )).future,
+      );
+
+      if (pageContent.plainText.trim().isEmpty) return;
+
+      var textToRead = pageContent.plainText;
+      if (fromSentence != null && fromSentence.trim().isNotEmpty) {
+        final idx = textToRead.indexOf(fromSentence.trim());
+        if (idx != -1) {
+          textToRead = textToRead.substring(idx);
+        }
+      }
+
+      final ttsNotifier = ref.read(ttsStateProvider.notifier);
+      ttsNotifier.loadText(textToRead);
+
+      setState(() {
+        _isTtsBarVisible = true;
+      });
+
+      ttsNotifier.play();
+    } catch (e) {
+      debugPrint('Error starting TTS: $e');
+    }
+  }
+
+  void _toggleTts() {
+    final hasInstalledModels = ref.read(hasInstalledTtsModelsProvider);
+    if (!hasInstalledModels) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No TTS engine downloaded.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final ttsState = ref.read(ttsStateProvider);
+    if (ttsState.isPlaying) {
+      ref.read(ttsStateProvider.notifier).pause();
+    } else if (ttsState.isPaused) {
+      ref.read(ttsStateProvider.notifier).play();
+      setState(() => _isTtsBarVisible = true);
+    } else {
+      if (_isTtsBarVisible) {
+        setState(() => _isTtsBarVisible = false);
+      } else {
+        _startTts();
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = ReaderTheme.of(context);
     final settings = ref.watch(readerSettingsProvider);
+    final ttsState = ref.watch(ttsStateProvider);
     final totalPages = widget.document.pageCount > 0
         ? widget.document.pageCount
         : 1;
@@ -261,7 +327,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               onPageChanged: _onPageOrScrollChanged,
               onToggleChrome: _toggleChrome,
               onPlayFromHere: (sentence) {
-                // Hook for Phase 5 / 6 audio dock integration
+                _startTts(fromSentence: sentence);
               },
             ),
           ),
@@ -278,7 +344,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 200),
                 opacity: _isChromeVisible ? 1.0 : 0.0,
-                child: _buildTopAppBar(theme),
+                child: _buildTopAppBar(theme, ttsState),
               ),
             ),
           ),
@@ -299,12 +365,29 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               ),
             ),
           ),
+
+          // Floating Media Control Bar for TTS
+          if (_isTtsBarVisible || ttsState.isPlaying || ttsState.isPaused)
+            Positioned(
+              bottom: Spacing.xl + MediaQuery.paddingOf(context).bottom + 16,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: TtsControlBar(
+                  onClose: () {
+                    setState(() => _isTtsBarVisible = false);
+                  },
+                ),
+              ),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildTopAppBar(ReaderThemeData theme) {
+  Widget _buildTopAppBar(ReaderThemeData theme, TtsState ttsState) {
+    final hasInstalledModels = ref.watch(hasInstalledTtsModelsProvider);
+
     return Container(
       padding: EdgeInsets.only(
         top: MediaQuery.paddingOf(context).top + Spacing.xs,
@@ -381,6 +464,36 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           ),
 
           const SizedBox(width: Spacing.xs),
+
+          // Read Aloud (TTS) Toggle
+          IconButton(
+            tooltip: hasInstalledModels
+                ? 'Read Aloud (TTS)'
+                : 'No TTS engine downloaded.',
+            icon: PhosphorIcon(
+              _isTtsBarVisible || ttsState.isPlaying
+                  ? PhosphorIconsFill.speakerHigh
+                  : PhosphorIconsLight.speakerHigh,
+              size: 20,
+              color: !hasInstalledModels
+                  ? theme.textMuted.withValues(alpha: 0.35)
+                  : (_isTtsBarVisible || ttsState.isPlaying
+                      ? theme.accent
+                      : theme.textPrimary),
+            ),
+            onPressed: hasInstalledModels ? _toggleTts : null,
+          ),
+
+          // Voice Manager / TTS Voices Settings
+          IconButton(
+            tooltip: 'Voice Settings',
+            icon: PhosphorIcon(
+              PhosphorIconsLight.waveform,
+              size: 20,
+              color: theme.textPrimary,
+            ),
+            onPressed: () => VoiceManagerScreen.show(context),
+          ),
 
           // Typography & Appearance Settings Toggle
           IconButton(

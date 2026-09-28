@@ -102,7 +102,7 @@ void main() {
       // Verify Reading Canvas with loaded text
       expect(find.byType(ReaderCanvas), findsOneWidget);
       expect(
-        find.textContaining('This is the text content for page 1'),
+        find.textContaining('This is the text content for page 1.'),
         findsOneWidget,
       );
 

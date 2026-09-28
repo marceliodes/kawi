@@ -5,7 +5,7 @@ set(CMAKE_C_COMPILER "gcc" CACHE STRING "C compiler" FORCE)
 set(CMAKE_CXX_COMPILER "g++" CACHE STRING "C++ compiler" FORCE)
 
 project(runner LANGUAGES CXX)
-
+set(ONNXRUNTIME_VERSION "1.14.1" CACHE STRING "ONNX Runtime version for piper_tts" FORCE)
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "kawi")
