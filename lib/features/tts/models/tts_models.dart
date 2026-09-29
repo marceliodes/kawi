@@ -319,6 +319,18 @@ class AudioBufferEvent extends TtsEvent {
   final int sampleRate;
 }
 
+class PlayAudioBytesEvent extends TtsEvent {
+  const PlayAudioBytesEvent({
+    required this.sentenceIndex,
+    required this.wavBytes,
+    this.durationMs = 0,
+  });
+
+  final int sentenceIndex;
+  final Uint8List wavBytes;
+  final int durationMs;
+}
+
 class TtsErrorEvent extends TtsEvent {
   const TtsErrorEvent(this.errorMessage);
   final String errorMessage;

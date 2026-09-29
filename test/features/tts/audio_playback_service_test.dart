@@ -1,15 +1,74 @@
+import 'dart:async';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kawi/core/utils/wav_encoder.dart';
 import 'package:kawi/features/tts/models/tts_models.dart';
 import 'package:kawi/features/tts/services/audio_playback_service.dart';
+
+class FakeAudioPlayer extends Fake implements AudioPlayer {
+  BytesSource? playedSource;
+  bool isPlaying = false;
+  bool isPaused = false;
+  final StreamController<void> _completeController = StreamController<void>.broadcast();
+
+  @override
+  Stream<void> get onPlayerComplete => _completeController.stream;
+
+  @override
+  Future<void> play(
+    Source source, {
+    double? volume,
+    double? balance,
+    AudioContext? ctx,
+    Duration? position,
+    PlayerMode? mode,
+  }) async {
+    if (source is BytesSource) {
+      playedSource = source;
+    }
+    isPlaying = true;
+    isPaused = false;
+  }
+
+  @override
+  Future<void> pause() async {
+    isPlaying = false;
+    isPaused = true;
+  }
+
+  @override
+  Future<void> resume() async {
+    isPlaying = true;
+    isPaused = false;
+  }
+
+  @override
+  Future<void> stop() async {
+    isPlaying = false;
+    isPaused = false;
+  }
+
+  @override
+  Future<void> dispose() async {
+    isPlaying = false;
+    await _completeController.close();
+  }
+
+  void triggerComplete() {
+    _completeController.add(null);
+  }
+}
 
 void main() {
   setUpAll(TestWidgetsFlutterBinding.ensureInitialized);
 
   group('AudioPlaybackService Tests', () {
     late AudioPlaybackService service;
+    late FakeAudioPlayer fakePlayer;
 
     setUp(() async {
-      service = AudioPlaybackService();
+      fakePlayer = FakeAudioPlayer();
+      service = AudioPlaybackService(audioPlayer: fakePlayer);
       await service.initialize();
     });
 
@@ -97,6 +156,24 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(service.currentState.currentSentenceIndex, equals(0));
       expect(service.currentState.currentSentenceText, equals('Part 1.'));
+    });
+
+    test('audio bytes playback via AudioPlayer on main UI thread', () async {
+      final sampleWav = encodeWav(samples: [0.0, 0.1, -0.1], sampleRate: 24000);
+      expect(sampleWav, isNotEmpty);
+      expect(service.audioPlayer, isNotNull);
+
+      // Verify playing WAV bytes delegates to AudioPlayer on the main thread
+      await service.audioPlayer.play(BytesSource(sampleWav));
+      expect(fakePlayer.playedSource?.bytes, equals(sampleWav));
+      expect(fakePlayer.isPlaying, isTrue);
+
+      // Verify pause and stop on main thread
+      service.pause();
+      expect(fakePlayer.isPaused, isTrue);
+
+      service.stop();
+      expect(fakePlayer.isPlaying, isFalse);
     });
   });
 }

@@ -1,22 +1,28 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_kokoro_tts/flutter_kokoro_tts.dart';
+// ignore: implementation_imports
+import 'package:flutter_kokoro_tts/src/model_manager.dart';
 import 'package:piper_tts/piper_tts.dart';
 
+import '../../../core/utils/wav_encoder.dart';
 import '../models/tts_models.dart';
 
 typedef WordBoundaryCallback = void Function(int start, int end, String word);
 typedef UtteranceDoneCallback = void Function();
 typedef AudioBufferCallback = void Function(List<double> samples, int sampleRate);
+typedef AudioBytesCallback = void Function(Uint8List wavBytes, int durationMs);
 
-/// Abstract engine bridge running in the TTS isolate context.
+/// Abstract engine bridge running strictly in the background TTS isolate context.
 ///
-/// Handles initialization, speech generation, pausing, stopping, and
-/// real-time word-boundary notifications across different underlying engines.
+/// Synthesizes audio samples off the main UI thread and passes encoded WAV bytes
+/// back to the worker for dispatch to the main UI thread.
+/// DOES NOT initialize or invoke AudioPlayer or GStreamer.
 abstract class TtsEngineBridge {
   bool get isInitialized;
 
@@ -26,9 +32,9 @@ abstract class TtsEngineBridge {
     RootIsolateToken? rootIsolateToken,
   });
 
-  /// Synthesizes and plays [text], firing [onWordBoundary] as each word is spoken,
-  /// calling [onAudioBuffer] when audio samples are ready,
-  /// and calling [onDone] when the sentence finishes.
+  /// Synthesizes speech for [text], firing [onWordBoundary] as each word is reached,
+  /// calling [onAudioBytes] when encoded WAV data is ready for main thread playback,
+  /// and calling [onDone] if there is no audio playback to await.
   Future<void> speak(
     String text, {
     double rate = 1.0,
@@ -36,12 +42,13 @@ abstract class TtsEngineBridge {
     required WordBoundaryCallback onWordBoundary,
     required UtteranceDoneCallback onDone,
     AudioBufferCallback? onAudioBuffer,
+    AudioBytesCallback? onAudioBytes,
   });
 
-  /// Pauses current playback.
+  /// Pauses current word boundaries / generation.
   Future<void> pause();
 
-  /// Stops current playback and clears pending audio buffers.
+  /// Stops current speech generation and cancels word boundary timers.
   Future<void> stop();
 
   /// Disposes of any resources, file handles, or ONNX sessions.
@@ -61,14 +68,17 @@ TtsEngineBridge createEngineBridge(TtsEngineType engineType) {
 }
 
 /// Kokoro 82M TTS Engine implementation.
+///
+/// Executes synthesis off the main UI thread (via dedicated isolate / Isolate.run)
+/// and emits WAV byte arrays to the main thread for playback.
 class KokoroEngineBridge implements TtsEngineBridge {
   KokoroTts? _kokoro;
   bool _initialized = false;
   bool _isSpeaking = false;
   bool _isPaused = false;
-  Timer? _wordTimer;
-  Timer? _completionTimer;
   String _voiceStyle = 'Default';
+  RootIsolateToken? _rootIsolateToken;
+  final List<Timer> _wordTimers = [];
 
   @override
   bool get isInitialized => _initialized;
@@ -79,6 +89,7 @@ class KokoroEngineBridge implements TtsEngineBridge {
     RootIsolateToken? rootIsolateToken,
   }) async {
     _voiceStyle = voice.voiceStyle ?? 'Default';
+    _rootIsolateToken = rootIsolateToken;
 
     if (rootIsolateToken != null) {
       try {
@@ -105,6 +116,7 @@ class KokoroEngineBridge implements TtsEngineBridge {
     required WordBoundaryCallback onWordBoundary,
     required UtteranceDoneCallback onDone,
     AudioBufferCallback? onAudioBuffer,
+    AudioBytesCallback? onAudioBytes,
   }) async {
     await stop();
     _isSpeaking = true;
@@ -116,63 +128,144 @@ class KokoroEngineBridge implements TtsEngineBridge {
       return;
     }
 
-    // Try actual Kokoro generation in isolate if model exists
+    Float32List pcm = Float32List(0);
+    final sampleRate = _kokoro?.sampleRate ?? 24000;
+
+    // Check if Kokoro model is available on disk before running inference
+    bool modelReady = false;
     try {
-      if (_kokoro != null) {
-        _kokoro!.generate(text, voice: _voiceStyle, speed: rate).then((audioData) {
-          if (audioData.isNotEmpty && onAudioBuffer != null) {
-            onAudioBuffer(audioData.toList(), _kokoro?.sampleRate ?? 24000);
-          }
-        }).catchError((dynamic _) {});
+      final modelPath = KokoroModelManager().modelPath;
+      if (modelPath.isNotEmpty) {
+        final modelFile = File(modelPath);
+        if (modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024) {
+          modelReady = true;
+        }
       }
     } catch (_) {
-      // Graceful fallback to word timer
+      modelReady = false;
     }
 
-    // Deliver progressive word-boundary callbacks matching reading speed
-    _scheduleWordBoundaries(
-      text: text,
-      words: words,
-      rate: rate,
-      onWordBoundary: onWordBoundary,
-      onDone: onDone,
-    );
+    if (modelReady) {
+      try {
+        pcm = await _synthesizeInIsolate(
+          text,
+          voiceStyle: _voiceStyle,
+          speed: rate,
+        );
+        if (pcm.isNotEmpty) {
+          onAudioBuffer?.call(pcm.toList(), sampleRate);
+        }
+      } catch (e) {
+        debugPrint('[KokoroEngineBridge] Synthesis note: $e');
+      }
+    }
+
+    if (!_isSpeaking) return;
+
+    if (pcm.isNotEmpty) {
+      // 1. Encode raw Float32 PCM samples into standard WAV byte array (Uint8List)
+      final wavBytes = encodeWav(samples: pcm, sampleRate: sampleRate);
+      final durationMs = (pcm.length / sampleRate * 1000).round();
+
+      // 2. Schedule synchronized word boundaries based on actual audio duration
+      _scheduleWordBoundaries(
+        words: words,
+        totalDurationMs: durationMs,
+        onWordBoundary: onWordBoundary,
+      );
+
+      // 3. Send WAV bytes back to the main thread via callback
+      onAudioBytes?.call(wavBytes, durationMs);
+    } else {
+      // Fallback word scheduling if no samples were synthesized
+      final fallbackDurationMs = _estimateDurationMs(words, rate);
+      _scheduleWordBoundaries(
+        words: words,
+        totalDurationMs: fallbackDurationMs,
+        onWordBoundary: onWordBoundary,
+        onComplete: () {
+          if (_isSpeaking) {
+            _isSpeaking = false;
+            onDone();
+          }
+        },
+      );
+    }
+  }
+
+  /// Synthesizes raw speech samples off the UI thread.
+  Future<Float32List> _synthesizeInIsolate(
+    String text, {
+    required String voiceStyle,
+    required double speed,
+  }) async {
+    final token = _rootIsolateToken;
+    if (token != null) {
+      try {
+        return await Isolate.run(() async {
+          BackgroundIsolateBinaryMessenger.ensureInitialized(token);
+          final kokoro = KokoroTts();
+          await kokoro.initialize();
+          final result = await kokoro.generate(text, voice: voiceStyle, speed: speed);
+          await kokoro.dispose();
+          return result;
+        });
+      } catch (e) {
+        debugPrint('[KokoroEngineBridge] Isolate.run note: $e');
+      }
+    }
+
+    _kokoro ??= KokoroTts();
+    await _kokoro!.initialize();
+    return await _kokoro!.generate(text, voice: voiceStyle, speed: speed);
   }
 
   void _scheduleWordBoundaries({
-    required String text,
     required List<_WordToken> words,
-    required double rate,
+    required int totalDurationMs,
     required WordBoundaryCallback onWordBoundary,
-    required UtteranceDoneCallback onDone,
+    VoidCallback? onComplete,
   }) {
-    // Normal speech rate is roughly 150 words per minute -> 400ms per word
-    final baseWordDurationMs = (380 / rate).clamp(100.0, 1000.0).round();
-    var currentWordIndex = 0;
-
-    _wordTimer = Timer.periodic(
-      Duration(milliseconds: baseWordDurationMs),
-      (timer) {
-        if (!_isSpeaking || _isPaused) return;
-
-        if (currentWordIndex < words.length) {
-          final wordToken = words[currentWordIndex];
-          onWordBoundary(wordToken.start, wordToken.end, wordToken.word);
-          currentWordIndex++;
-        } else {
-          timer.cancel();
-          _isSpeaking = false;
-          onDone();
-        }
-      },
-    );
-
-    // Initial word immediately
-    if (words.isNotEmpty) {
-      final first = words[0];
-      onWordBoundary(first.start, first.end, first.word);
-      currentWordIndex = 1;
+    _cancelWordTimers();
+    if (words.isEmpty) {
+      onComplete?.call();
+      return;
     }
+
+    final totalChars = words.fold<int>(0, (sum, w) => sum + w.word.length);
+    var elapsedMs = 0;
+
+    for (var i = 0; i < words.length; i++) {
+      final word = words[i];
+      final proportion = totalChars > 0 ? (word.word.length / totalChars) : (1.0 / words.length);
+      final wordDuration = (totalDurationMs * proportion).round().clamp(40, 5000);
+
+      final delayMs = elapsedMs;
+      final timer = Timer(Duration(milliseconds: delayMs), () {
+        if (_isSpeaking && !_isPaused) {
+          onWordBoundary(word.start, word.end, word.word);
+        }
+      });
+      _wordTimers.add(timer);
+
+      elapsedMs += wordDuration;
+    }
+
+    if (onComplete != null) {
+      final doneTimer = Timer(Duration(milliseconds: totalDurationMs), () {
+        if (_isSpeaking && !_isPaused) {
+          onComplete();
+        }
+      });
+      _wordTimers.add(doneTimer);
+    }
+  }
+
+  void _cancelWordTimers() {
+    for (final timer in _wordTimers) {
+      timer.cancel();
+    }
+    _wordTimers.clear();
   }
 
   @override
@@ -184,10 +277,7 @@ class KokoroEngineBridge implements TtsEngineBridge {
   Future<void> stop() async {
     _isSpeaking = false;
     _isPaused = false;
-    _wordTimer?.cancel();
-    _wordTimer = null;
-    _completionTimer?.cancel();
-    _completionTimer = null;
+    _cancelWordTimers();
   }
 
   @override
@@ -203,7 +293,7 @@ class PiperEngineBridge implements TtsEngineBridge {
   bool _initialized = false;
   bool _isSpeaking = false;
   bool _isPaused = false;
-  Timer? _wordTimer;
+  final List<Timer> _wordTimers = [];
   String? _modelPath;
 
   @override
@@ -229,6 +319,7 @@ class PiperEngineBridge implements TtsEngineBridge {
     required WordBoundaryCallback onWordBoundary,
     required UtteranceDoneCallback onDone,
     AudioBufferCallback? onAudioBuffer,
+    AudioBytesCallback? onAudioBytes,
   }) async {
     await stop();
     _isSpeaking = true;
@@ -245,7 +336,7 @@ class PiperEngineBridge implements TtsEngineBridge {
       try {
         Piper.modelPath = _modelPath!;
         final file = await Piper.generateSpeech(text);
-        if (file.existsSync() && onAudioBuffer != null) {
+        if (file.existsSync() && _isSpeaking) {
           final bytes = await file.readAsBytes();
           if (bytes.length > 44) {
             final pcm = bytes.sublist(44);
@@ -254,7 +345,17 @@ class PiperEngineBridge implements TtsEngineBridge {
               final sample16 = pcm.buffer.asByteData().getInt16(i, Endian.little);
               samples.add(sample16 / 32768.0);
             }
-            onAudioBuffer(samples, 22050);
+            onAudioBuffer?.call(samples, 22050);
+
+            final durationMs = ((pcm.length / (22050 * 2)) * 1000).round();
+            _scheduleWordBoundaries(
+              words: words,
+              totalDurationMs: durationMs,
+              onWordBoundary: onWordBoundary,
+            );
+
+            onAudioBytes?.call(Uint8List.fromList(bytes), durationMs);
+            return;
           }
         }
       } catch (e) {
@@ -262,31 +363,67 @@ class PiperEngineBridge implements TtsEngineBridge {
       }
     }
 
-    final baseWordDurationMs = (350 / rate).clamp(100.0, 1000.0).round();
-    var currentWordIndex = 0;
-
-    _wordTimer = Timer.periodic(
-      Duration(milliseconds: baseWordDurationMs),
-      (timer) {
-        if (!_isSpeaking || _isPaused) return;
-
-        if (currentWordIndex < words.length) {
-          final wordToken = words[currentWordIndex];
-          onWordBoundary(wordToken.start, wordToken.end, wordToken.word);
-          currentWordIndex++;
-        } else {
-          timer.cancel();
+    // Fallback if no model file or in test environment
+    final fallbackDurationMs = _estimateDurationMs(words, rate);
+    _scheduleWordBoundaries(
+      words: words,
+      totalDurationMs: fallbackDurationMs,
+      onWordBoundary: onWordBoundary,
+      onComplete: () {
+        if (_isSpeaking) {
           _isSpeaking = false;
           onDone();
         }
       },
     );
+  }
 
-    if (words.isNotEmpty) {
-      final first = words[0];
-      onWordBoundary(first.start, first.end, first.word);
-      currentWordIndex = 1;
+  void _scheduleWordBoundaries({
+    required List<_WordToken> words,
+    required int totalDurationMs,
+    required WordBoundaryCallback onWordBoundary,
+    VoidCallback? onComplete,
+  }) {
+    _cancelWordTimers();
+    if (words.isEmpty) {
+      onComplete?.call();
+      return;
     }
+
+    final totalChars = words.fold<int>(0, (sum, w) => sum + w.word.length);
+    var elapsedMs = 0;
+
+    for (var i = 0; i < words.length; i++) {
+      final word = words[i];
+      final proportion = totalChars > 0 ? (word.word.length / totalChars) : (1.0 / words.length);
+      final wordDuration = (totalDurationMs * proportion).round().clamp(40, 5000);
+
+      final delayMs = elapsedMs;
+      final timer = Timer(Duration(milliseconds: delayMs), () {
+        if (_isSpeaking && !_isPaused) {
+          onWordBoundary(word.start, word.end, word.word);
+        }
+      });
+      _wordTimers.add(timer);
+
+      elapsedMs += wordDuration;
+    }
+
+    if (onComplete != null) {
+      final doneTimer = Timer(Duration(milliseconds: totalDurationMs), () {
+        if (_isSpeaking && !_isPaused) {
+          onComplete();
+        }
+      });
+      _wordTimers.add(doneTimer);
+    }
+  }
+
+  void _cancelWordTimers() {
+    for (final timer in _wordTimers) {
+      timer.cancel();
+    }
+    _wordTimers.clear();
   }
 
   @override
@@ -298,8 +435,7 @@ class PiperEngineBridge implements TtsEngineBridge {
   Future<void> stop() async {
     _isSpeaking = false;
     _isPaused = false;
-    _wordTimer?.cancel();
-    _wordTimer = null;
+    _cancelWordTimers();
   }
 
   @override
@@ -338,6 +474,7 @@ class MockTtsEngineBridge implements TtsEngineBridge {
     required WordBoundaryCallback onWordBoundary,
     required UtteranceDoneCallback onDone,
     AudioBufferCallback? onAudioBuffer,
+    AudioBytesCallback? onAudioBytes,
   }) async {
     await stop();
     _isSpeaking = true;
@@ -405,4 +542,9 @@ List<_WordToken> _extractWords(String text) {
     result.add(_WordToken(m.group(0)!, m.start, m.end));
   }
   return result;
+}
+
+int _estimateDurationMs(List<_WordToken> words, double rate) {
+  final baseWordDurationMs = (360 / rate).clamp(100.0, 1000.0).round();
+  return max(100, words.length * baseWordDurationMs);
 }

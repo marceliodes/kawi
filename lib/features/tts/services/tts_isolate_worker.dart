@@ -186,6 +186,15 @@ class TtsIsolateWorker {
             ),
           );
         },
+        onAudioBytes: (wavBytes, durationMs) {
+          _toMainPort.send(
+            PlayAudioBytesEvent(
+              sentenceIndex: _currentIndex,
+              wavBytes: wavBytes,
+              durationMs: durationMs,
+            ),
+          );
+        },
       );
     }
   }

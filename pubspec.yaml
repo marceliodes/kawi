@@ -9,6 +9,7 @@ environment:
   sdk: ^3.13.4
 
 dependencies:
+  audioplayers: ^6.8.1
   crypto: ^3.0.7
   desktop_drop: ^0.8.4
   drift: ^2.35.0
