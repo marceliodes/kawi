@@ -19,6 +19,8 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_kokoro_tts: ^0.0.1
+  flutter_onnxruntime:
+    path: plugins/flutter_onnxruntime
   flutter_riverpod: ^3.4.3
   http: ^1.6.0
   path: ^1.9.1
@@ -35,6 +37,13 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   path_provider_platform_interface: ^2.1.2
+
+dependency_overrides:
+  flutter_onnxruntime:
+    path: plugins/flutter_onnxruntime
+  path_provider_foundation: 2.5.1
+  windows_file_picker:
+    path: plugins/windows_file_picker
 
 flutter:
   uses-material-design: true

@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:isolate';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../models/tts_models.dart';
 import 'tts_isolate_worker.dart';
@@ -20,7 +22,6 @@ class AudioPlaybackService {
 
   final AudioPlayer _audioPlayer;
   StreamSubscription<void>? _playerCompleteSubscription;
-  Timer? _playbackFallbackTimer;
   bool _isAudioPlaying = false;
 
   AudioPlayer get audioPlayer => _audioPlayer;
@@ -28,6 +29,7 @@ class AudioPlaybackService {
   Isolate? _isolate;
   SendPort? _toIsolatePort;
   final ReceivePort _fromIsolatePort = ReceivePort();
+  final List<TtsCommand> _pendingCommands = [];
 
   final ValueNotifier<TtsState> stateNotifier =
       ValueNotifier<TtsState>(const TtsState());
@@ -46,6 +48,14 @@ class AudioPlaybackService {
   TtsVoiceModel? _activeVoice;
 
   TtsState get currentState => stateNotifier.value;
+
+  void _sendCommand(TtsCommand command) {
+    if (_toIsolatePort != null) {
+      _toIsolatePort!.send(command);
+    } else {
+      _pendingCommands.add(command);
+    }
+  }
 
   /// Initializes the background isolate and registers audio player listeners on the main UI thread.
   Future<void> initialize() async {
@@ -76,11 +86,20 @@ class AudioPlaybackService {
           );
         }
 
+        for (final cmd in _pendingCommands) {
+          _toIsolatePort?.send(cmd);
+        }
+        _pendingCommands.clear();
+
         if (!completer.isCompleted) {
           completer.complete();
         }
       } else if (message is PlayAudioBytesEvent) {
-        _playWavBytes(message.wavBytes, durationMs: message.durationMs);
+        _playWavBytes(
+          message.wavBytes,
+          sentenceIndex: message.sentenceIndex,
+          durationMs: message.durationMs,
+        );
       } else if (message is StateUpdatedEvent) {
         stateNotifier.value = message.state;
       } else if (message is WordBoundaryEvent) {
@@ -88,14 +107,10 @@ class AudioPlaybackService {
       } else if (message is AudioBufferEvent) {
         _audioBufferController.add(message);
       } else if (message is PauseAudioEvent) {
-        _playbackFallbackTimer?.cancel();
-        _playbackFallbackTimer = null;
         try {
           _audioPlayer.pause();
         } catch (_) {}
       } else if (message is StopAudioEvent) {
-        _playbackFallbackTimer?.cancel();
-        _playbackFallbackTimer = null;
         _isAudioPlaying = false;
         try {
           _audioPlayer.stop();
@@ -119,35 +134,44 @@ class AudioPlaybackService {
   }
 
   /// Plays synthesized WAV bytes on the main thread via AudioPlayer.
-  Future<void> _playWavBytes(Uint8List wavBytes, {int durationMs = 0}) async {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
+  Future<void> _playWavBytes(
+    Uint8List wavBytes, {
+    int sentenceIndex = 0,
+    int durationMs = 0,
+  }) async {
+    final currentIndex = sentenceIndex;
+    // ignore: avoid_print
+    print('[Kawi TTS] Received ${wavBytes.length} bytes for sentence index $currentIndex');
 
     if (wavBytes.isEmpty) {
-      _onAudioPlaybackComplete();
+      debugPrint('[Kawi TTS] Error: audio bytes are empty for sentence index $currentIndex');
+      _isAudioPlaying = false;
+      stop();
       return;
     }
 
     _isAudioPlaying = true;
     try {
-      await _audioPlayer.play(BytesSource(wavBytes));
+      Directory tempDir;
+      try {
+        tempDir = await getTemporaryDirectory();
+      } catch (_) {
+        tempDir = Directory.systemTemp;
+      }
+      final tempFile = File('${tempDir.path}/kawi_tts_temp.wav');
+      await tempFile.writeAsBytes(wavBytes, flush: true);
+      await _audioPlayer.play(DeviceFileSource(tempFile.path));
     } catch (e) {
       debugPrint('[AudioPlaybackService] AudioPlayer.play: $e');
-    }
-
-    // Safety fallback timer ensuring utterance completion even in headless or audio-disabled environments
-    if (durationMs > 0) {
-      _playbackFallbackTimer =
-          Timer(Duration(milliseconds: durationMs + 250), _onAudioPlaybackComplete);
+      _isAudioPlaying = false;
+      stop();
     }
   }
 
   void _onAudioPlaybackComplete() {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
     if (!_isAudioPlaying) return;
     _isAudioPlaying = false;
-    _toIsolatePort?.send(const UtteranceCompletedCommand());
+    _sendCommand(const UtteranceCompletedCommand());
   }
 
   /// Sets the active voice model and informs the isolate.
@@ -158,7 +182,7 @@ class AudioPlaybackService {
       hasInstalledModels: voice != null,
     );
 
-    _toIsolatePort?.send(
+    _sendCommand(
       ConfigureVoiceCommand(
         voice: voice,
         rootIsolateToken: RootIsolateToken.instance,
@@ -168,7 +192,9 @@ class AudioPlaybackService {
 
   /// Loads text into the worker queue.
   void loadText(String text, {int startSentenceIndex = 0}) {
-    _toIsolatePort?.send(
+    // ignore: avoid_print
+    print('[Kawi TTS] loadText called with ${text.length} chars (startSentenceIndex: $startSentenceIndex)');
+    _sendCommand(
       LoadTextCommand(text, startSentenceIndex: startSentenceIndex),
     );
   }
@@ -178,6 +204,8 @@ class AudioPlaybackService {
   /// Zero-Model state guarantee: If no voice is available,
   /// this is a safe no-op that updates the error message without crashing.
   void play() {
+    // ignore: avoid_print
+    print('[Kawi TTS] play called (hasVoice: ${_activeVoice != null}, isPaused: ${currentState.isPaused})');
     if (_activeVoice == null && !currentState.hasInstalledModels) {
       debugPrint('[AudioPlaybackService] Play aborted: No TTS engine downloaded.');
       stateNotifier.value = stateNotifier.value.copyWith(
@@ -193,77 +221,65 @@ class AudioPlaybackService {
       } catch (_) {}
     }
 
-    _toIsolatePort?.send(const PlayCommand());
+    _sendCommand(const PlayCommand());
   }
 
   /// Pauses playback on the main thread and instructs the isolate.
   void pause() {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
     try {
       _audioPlayer.pause();
     } catch (_) {}
-    _toIsolatePort?.send(const PauseCommand());
+    _sendCommand(const PauseCommand());
   }
 
   /// Stops playback on the main thread and instructs the isolate.
   void stop() {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
     _isAudioPlaying = false;
     try {
       _audioPlayer.stop();
     } catch (_) {}
-    _toIsolatePort?.send(const StopCommand());
+    _sendCommand(const StopCommand());
   }
 
   /// Advances to the next sentence chunk.
   void nextSentence() {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
     _isAudioPlaying = false;
     try {
       _audioPlayer.stop();
     } catch (_) {}
-    _toIsolatePort?.send(const NextSentenceCommand());
+    _sendCommand(const NextSentenceCommand());
   }
 
   /// Rewinds to the previous sentence chunk.
   void previousSentence() {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
     _isAudioPlaying = false;
     try {
       _audioPlayer.stop();
     } catch (_) {}
-    _toIsolatePort?.send(const PreviousSentenceCommand());
+    _sendCommand(const PreviousSentenceCommand());
   }
 
   /// Seeks to a specific sentence chunk by index.
   void seekSentence(int sentenceIndex) {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
     _isAudioPlaying = false;
     try {
       _audioPlayer.stop();
     } catch (_) {}
-    _toIsolatePort?.send(SeekSentenceCommand(sentenceIndex));
+    _sendCommand(SeekSentenceCommand(sentenceIndex));
   }
 
   /// Adjusts speech rate (0.5 to 2.0).
   void setSpeechRate(double rate) {
-    _toIsolatePort?.send(SetRateCommand(rate));
+    _sendCommand(SetRateCommand(rate));
   }
 
   /// Adjusts pitch (0.5 to 2.0).
   void setPitch(double pitch) {
-    _toIsolatePort?.send(SetPitchCommand(pitch));
+    _sendCommand(SetPitchCommand(pitch));
   }
 
   /// Cleans up player resources and isolates.
   void dispose() {
-    _playbackFallbackTimer?.cancel();
-    _playbackFallbackTimer = null;
     _isAudioPlaying = false;
     _playerCompleteSubscription?.cancel();
     _playerCompleteSubscription = null;
@@ -271,7 +287,7 @@ class AudioPlaybackService {
       _audioPlayer.stop();
       _audioPlayer.dispose();
     } catch (_) {}
-    _toIsolatePort?.send(const DisposeCommand());
+    _sendCommand(const DisposeCommand());
     _fromIsolatePort.close();
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;

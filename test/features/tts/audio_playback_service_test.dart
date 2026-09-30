@@ -7,6 +7,8 @@ import 'package:kawi/features/tts/services/audio_playback_service.dart';
 
 class FakeAudioPlayer extends Fake implements AudioPlayer {
   BytesSource? playedSource;
+  DeviceFileSource? playedDeviceFileSource;
+  Source? lastSource;
   bool isPlaying = false;
   bool isPaused = false;
   final StreamController<void> _completeController = StreamController<void>.broadcast();
@@ -23,8 +25,12 @@ class FakeAudioPlayer extends Fake implements AudioPlayer {
     Duration? position,
     PlayerMode? mode,
   }) async {
+    lastSource = source;
     if (source is BytesSource) {
       playedSource = source;
+    }
+    if (source is DeviceFileSource) {
+      playedDeviceFileSource = source;
     }
     isPlaying = true;
     isPaused = false;
@@ -163,9 +169,9 @@ void main() {
       expect(sampleWav, isNotEmpty);
       expect(service.audioPlayer, isNotNull);
 
-      // Verify playing WAV bytes delegates to AudioPlayer on the main thread
-      await service.audioPlayer.play(BytesSource(sampleWav));
-      expect(fakePlayer.playedSource?.bytes, equals(sampleWav));
+      // Verify playing WAV file delegates to AudioPlayer on the main thread via DeviceFileSource
+      await service.audioPlayer.play(DeviceFileSource('/tmp/test.wav'));
+      expect(fakePlayer.playedDeviceFileSource?.path, equals('/tmp/test.wav'));
       expect(fakePlayer.isPlaying, isTrue);
 
       // Verify pause and stop on main thread
@@ -174,6 +180,24 @@ void main() {
 
       service.stop();
       expect(fakePlayer.isPlaying, isFalse);
+    });
+
+    test('sentence advancement strictly relies on onPlayerComplete and never advances on idle timer', () async {
+      const mockVoice = TtsVoiceModel(
+        id: 'test-mock-voice',
+        name: 'Mock Test Voice',
+        engineType: TtsEngineType.mock,
+        isInstalled: true,
+      );
+      service.setActiveVoice(mockVoice);
+      service.loadText('Sentence one. Sentence two.');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(service.currentState.currentSentenceIndex, equals(0));
+
+      // Even after waiting longer than any previous fallback duration, index remains 0
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(service.currentState.currentSentenceIndex, equals(0));
     });
   });
 }

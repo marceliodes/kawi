@@ -1,13 +1,12 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_kokoro_tts/flutter_kokoro_tts.dart';
-// ignore: implementation_imports
-import 'package:flutter_kokoro_tts/src/model_manager.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:piper_tts/piper_tts.dart';
 
 import '../../../core/utils/wav_encoder.dart';
@@ -69,7 +68,7 @@ TtsEngineBridge createEngineBridge(TtsEngineType engineType) {
 
 /// Kokoro 82M TTS Engine implementation.
 ///
-/// Executes synthesis off the main UI thread (via dedicated isolate / Isolate.run)
+/// Executes synthesis off the main UI thread in the background TTS isolate
 /// and emits WAV byte arrays to the main thread for playback.
 class KokoroEngineBridge implements TtsEngineBridge {
   KokoroTts? _kokoro;
@@ -77,11 +76,29 @@ class KokoroEngineBridge implements TtsEngineBridge {
   bool _isSpeaking = false;
   bool _isPaused = false;
   String _voiceStyle = 'Default';
-  RootIsolateToken? _rootIsolateToken;
+  String? _modelPath;
   final List<Timer> _wordTimers = [];
 
   @override
   bool get isInitialized => _initialized;
+
+  Future<String?> _resolveKokoroModelPath() async {
+    if (_modelPath != null && _modelPath!.isNotEmpty) {
+      final f = File(_modelPath!);
+      if (f.existsSync() && f.lengthSync() > 10 * 1024 * 1024) {
+        return _modelPath;
+      }
+    }
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final defaultFile = File(p.join(appDir.path, 'kokoro', 'Kokoro-82M-ONNX', 'model_quantized.onnx'));
+      if (defaultFile.existsSync() && defaultFile.lengthSync() > 10 * 1024 * 1024) {
+        _modelPath = defaultFile.path;
+        return _modelPath;
+      }
+    } catch (_) {}
+    return null;
+  }
 
   @override
   Future<void> initialize({
@@ -89,7 +106,7 @@ class KokoroEngineBridge implements TtsEngineBridge {
     RootIsolateToken? rootIsolateToken,
   }) async {
     _voiceStyle = voice.voiceStyle ?? 'Default';
-    _rootIsolateToken = rootIsolateToken;
+    _modelPath = voice.localPath;
 
     if (rootIsolateToken != null) {
       try {
@@ -99,8 +116,11 @@ class KokoroEngineBridge implements TtsEngineBridge {
       }
     }
 
+    await _resolveKokoroModelPath();
+
     try {
       _kokoro ??= KokoroTts();
+      await _kokoro!.initialize();
       _initialized = true;
     } catch (e) {
       debugPrint('[KokoroEngineBridge] Initialization note: $e');
@@ -131,33 +151,27 @@ class KokoroEngineBridge implements TtsEngineBridge {
     Float32List pcm = Float32List(0);
     final sampleRate = _kokoro?.sampleRate ?? 24000;
 
-    // Check if Kokoro model is available on disk before running inference
-    bool modelReady = false;
-    try {
-      final modelPath = KokoroModelManager().modelPath;
-      if (modelPath.isNotEmpty) {
-        final modelFile = File(modelPath);
-        if (modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024) {
-          modelReady = true;
-        }
-      }
-    } catch (_) {
-      modelReady = false;
-    }
+    final resolvedPath = await _resolveKokoroModelPath();
+    final modelReady = resolvedPath != null;
 
     if (modelReady) {
       try {
-        pcm = await _synthesizeInIsolate(
+        pcm = await _synthesize(
           text,
           voiceStyle: _voiceStyle,
           speed: rate,
         );
+        final durationMs = (pcm.length / sampleRate * 1000).round();
+        // ignore: avoid_print
+        print('[TTS Worker] Kokoro finished inference: ${pcm.length} samples (${durationMs}ms) for sentence: "$text"');
         if (pcm.isNotEmpty) {
           onAudioBuffer?.call(pcm.toList(), sampleRate);
         }
       } catch (e) {
         debugPrint('[KokoroEngineBridge] Synthesis note: $e');
       }
+    } else {
+      debugPrint('[KokoroEngineBridge] Kokoro model file not ready.');
     }
 
     if (!_isSpeaking) return;
@@ -177,44 +191,18 @@ class KokoroEngineBridge implements TtsEngineBridge {
       // 3. Send WAV bytes back to the main thread via callback
       onAudioBytes?.call(wavBytes, durationMs);
     } else {
-      // Fallback word scheduling if no samples were synthesized
-      final fallbackDurationMs = _estimateDurationMs(words, rate);
-      _scheduleWordBoundaries(
-        words: words,
-        totalDurationMs: fallbackDurationMs,
-        onWordBoundary: onWordBoundary,
-        onComplete: () {
-          if (_isSpeaking) {
-            _isSpeaking = false;
-            onDone();
-          }
-        },
-      );
+      // Inference produced no samples. Do NOT trigger onDone fallback timer to advance sentences silently.
+      _isSpeaking = false;
+      debugPrint('[KokoroEngineBridge] No audio synthesized for sentence. Playback stopped.');
     }
   }
 
   /// Synthesizes raw speech samples off the UI thread.
-  Future<Float32List> _synthesizeInIsolate(
+  Future<Float32List> _synthesize(
     String text, {
     required String voiceStyle,
     required double speed,
   }) async {
-    final token = _rootIsolateToken;
-    if (token != null) {
-      try {
-        return await Isolate.run(() async {
-          BackgroundIsolateBinaryMessenger.ensureInitialized(token);
-          final kokoro = KokoroTts();
-          await kokoro.initialize();
-          final result = await kokoro.generate(text, voice: voiceStyle, speed: speed);
-          await kokoro.dispose();
-          return result;
-        });
-      } catch (e) {
-        debugPrint('[KokoroEngineBridge] Isolate.run note: $e');
-      }
-    }
-
     _kokoro ??= KokoroTts();
     await _kokoro!.initialize();
     return await _kokoro!.generate(text, voice: voiceStyle, speed: speed);
@@ -363,19 +351,9 @@ class PiperEngineBridge implements TtsEngineBridge {
       }
     }
 
-    // Fallback if no model file or in test environment
-    final fallbackDurationMs = _estimateDurationMs(words, rate);
-    _scheduleWordBoundaries(
-      words: words,
-      totalDurationMs: fallbackDurationMs,
-      onWordBoundary: onWordBoundary,
-      onComplete: () {
-        if (_isSpeaking) {
-          _isSpeaking = false;
-          onDone();
-        }
-      },
-    );
+    // If no audio was generated, do not advance sentences on a fallback timer
+    _isSpeaking = false;
+    debugPrint('[PiperEngineBridge] Piper generation produced no audio.');
   }
 
   void _scheduleWordBoundaries({
@@ -542,9 +520,4 @@ List<_WordToken> _extractWords(String text) {
     result.add(_WordToken(m.group(0)!, m.start, m.end));
   }
   return result;
-}
-
-int _estimateDurationMs(List<_WordToken> words, double rate) {
-  final baseWordDurationMs = (360 / rate).clamp(100.0, 1000.0).round();
-  return max(100, words.length * baseWordDurationMs);
 }

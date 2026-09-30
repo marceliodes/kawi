@@ -109,6 +109,14 @@ class VoiceManagerService {
     ),
   ];
 
+  Future<String> _getKokoroDirectoryPath() async {
+    if (_kokoroManager.modelDir.isNotEmpty) {
+      return _kokoroManager.modelDir;
+    }
+    final appDir = await getApplicationDocumentsDirectory();
+    return p.join(appDir.path, 'kokoro', 'Kokoro-82M-ONNX');
+  }
+
   Future<String> _getPiperDirectoryPath() async {
     final appDir = await getApplicationSupportDirectory();
     final piperDir = Directory(p.join(appDir.path, 'piper_models'));
@@ -124,13 +132,13 @@ class VoiceManagerService {
 
     // Non-blocking Kokoro model status check (checks existence & size rather than hashing 85MB on UI thread)
     bool kokoroReady = false;
+    String? resolvedKokoroPath;
     try {
-      final modelPath = _kokoroManager.modelPath;
-      if (modelPath.isNotEmpty) {
-        final modelFile = File(modelPath);
-        if (modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024) {
-          kokoroReady = true;
-        }
+      final kokoroDir = await _getKokoroDirectoryPath();
+      final modelFile = File(p.join(kokoroDir, 'model_quantized.onnx'));
+      if (modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024) {
+        kokoroReady = true;
+        resolvedKokoroPath = modelFile.path;
       }
     } catch (_) {
       kokoroReady = false;
@@ -140,7 +148,7 @@ class VoiceManagerService {
       list.add(
         kv.copyWith(
           isInstalled: kokoroReady,
-          localPath: kokoroReady ? _kokoroManager.modelPath : null,
+          localPath: kokoroReady ? resolvedKokoroPath : null,
         ),
       );
     }
@@ -250,15 +258,12 @@ class VoiceManagerService {
   Future<void> deleteVoiceModel(TtsVoiceModel model) async {
     if (model.engineType == TtsEngineType.kokoro) {
       // Delete Kokoro model directory entirely
-      final baseDir = _kokoroManager.modelDir;
-      if (baseDir.isNotEmpty) {
-        final dir = Directory(baseDir);
-        if (dir.existsSync()) {
-          dir.deleteSync(recursive: true);
-        }
+      final kokoroDir = Directory(await _getKokoroDirectoryPath());
+      if (kokoroDir.existsSync()) {
+        kokoroDir.deleteSync(recursive: true);
       }
       // Also delete any ready marker or espeak data if desired
-      final kokoroBase = Directory(_kokoroManager.kokoroBaseDir);
+      final kokoroBase = kokoroDir.parent;
       if (kokoroBase.existsSync()) {
         try {
           kokoroBase.deleteSync(recursive: true);
@@ -291,13 +296,12 @@ class VoiceManagerService {
         }
       }
 
-      if (_kokoroManager.modelDir.isNotEmpty) {
-        final kokoroDir = Directory(_kokoroManager.modelDir);
-        if (kokoroDir.existsSync()) {
-          for (final file in kokoroDir.listSync(recursive: true)) {
-            if (file is File) {
-              total += file.lengthSync();
-            }
+      final kokoroDirPath = await _getKokoroDirectoryPath();
+      final kokoroDir = Directory(kokoroDirPath);
+      if (kokoroDir.existsSync()) {
+        for (final file in kokoroDir.listSync(recursive: true)) {
+          if (file is File) {
+            total += file.lengthSync();
           }
         }
       }

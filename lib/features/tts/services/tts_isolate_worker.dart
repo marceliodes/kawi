@@ -54,9 +54,13 @@ class TtsIsolateWorker {
         _configureVoice(voice);
 
       case LoadTextCommand(:final text, :final startSentenceIndex):
+        // ignore: avoid_print
+        print('[TTS Worker] LoadTextCommand received with ${text.length} chars (startSentenceIndex: $startSentenceIndex)');
         _loadText(text, startSentenceIndex);
 
       case PlayCommand():
+        // ignore: avoid_print
+        print('[TTS Worker] PlayCommand received (sentences: ${_sentences.length}, currentIndex: $_currentIndex)');
         _play();
 
       case PauseCommand():
@@ -143,7 +147,11 @@ class TtsIsolateWorker {
   }
 
   void _play() {
-    if (_sentences.isEmpty) return;
+    if (_sentences.isEmpty) {
+      // ignore: avoid_print
+      print('[TTS Worker] Play aborted: sentences list is empty.');
+      return;
+    }
 
     // Zero-model safeguard: do not throw or crash if no voice is available
     if (_engineBridge == null && _state.activeVoice == null) {
@@ -152,6 +160,8 @@ class TtsIsolateWorker {
     }
 
     final currentSentence = _sentences[_currentIndex];
+    // ignore: avoid_print
+    print('[TTS Worker] Received sentence [${_currentIndex + 1}/${_sentences.length}]: "${currentSentence.text}"');
 
     _state = _state.copyWith(
       playbackState: TtsPlaybackState.playing,
@@ -187,6 +197,8 @@ class TtsIsolateWorker {
           );
         },
         onAudioBytes: (wavBytes, durationMs) {
+          // ignore: avoid_print
+          print('[TTS Worker] Sending PlayAudioBytesEvent with ${wavBytes.length} bytes for sentence index $_currentIndex');
           _toMainPort.send(
             PlayAudioBytesEvent(
               sentenceIndex: _currentIndex,
@@ -265,8 +277,12 @@ class TtsIsolateWorker {
 
     if (_currentIndex < _sentences.length - 1) {
       _currentIndex++;
+      // ignore: avoid_print
+      print('[TTS Worker] Utterance completed. Advancing to sentence [${_currentIndex + 1}/${_sentences.length}]');
       _play();
     } else {
+      // ignore: avoid_print
+      print('[TTS Worker] Utterance completed. All ${_sentences.length} sentences finished.');
       _state = _state.copyWith(
         playbackState: TtsPlaybackState.completed,
         currentWord: '',
