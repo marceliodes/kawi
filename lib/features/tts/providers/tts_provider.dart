@@ -33,18 +33,32 @@ class TtsStateNotifier extends Notifier<TtsState> {
   }
 
   void loadText(String text, {int startSentenceIndex = 0}) {
+    // ignore: avoid_print
+    print('>>> [TTS NOTIFIER] loadText (${text.length} chars) <<<');
     ref.read(ttsServiceProvider).loadText(text, startSentenceIndex: startSentenceIndex);
   }
 
+  void speak(String text, {int startSentenceIndex = 0}) {
+    // ignore: avoid_print
+    print('>>> [TTS NOTIFIER] speak (${text.length} chars) <<<');
+    ref.read(ttsServiceProvider).speak(text, startSentenceIndex: startSentenceIndex);
+  }
+
   void play() {
+    // ignore: avoid_print
+    print('>>> [TTS NOTIFIER] play() <<<');
     ref.read(ttsServiceProvider).play();
   }
 
   void pause() {
+    // ignore: avoid_print
+    print('>>> [TTS NOTIFIER] pause() <<<');
     ref.read(ttsServiceProvider).pause();
   }
 
   void stop() {
+    // ignore: avoid_print
+    print('>>> [TTS NOTIFIER] stop() <<<');
     ref.read(ttsServiceProvider).stop();
   }
 

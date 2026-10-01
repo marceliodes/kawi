@@ -184,5 +184,36 @@ void main() {
       // Button has disabled zero-model tooltip
       expect(find.byTooltip('No TTS engine downloaded.'), findsOneWidget);
     });
+
+    testWidgets('calls onPlay when Play tapped with 0 sentences', (tester) async {
+      var onPlayCalled = false;
+      final mockNotifier = MockTtsNotifier(
+        const TtsState(),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            ttsStateProvider.overrideWith(() => mockNotifier),
+            hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ],
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: TtsControlBar(
+                  onClose: () {},
+                  onPlay: () => onPlayCalled = true,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Play'));
+      await tester.pump();
+      expect(onPlayCalled, isTrue);
+    });
   });
 }

@@ -37,6 +37,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     "Debug" "Profile" "Release")
 endif()
 
+# Limit compiler concurrency to avoid resource exhaustion on heavy targets like piper.cpp
+if(DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL})
+  set_property(GLOBAL PROPERTY JOB_POOLS compile_job_pool=$ENV{CMAKE_BUILD_PARALLEL_LEVEL})
+  set(CMAKE_JOB_POOL_COMPILE compile_job_pool)
+else()
+  set_property(GLOBAL PROPERTY JOB_POOLS compile_job_pool=2)
+  set(CMAKE_JOB_POOL_COMPILE compile_job_pool)
+endif()
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
@@ -76,6 +85,21 @@ set_target_properties(${BINARY_NAME}
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
+
+# Serialize build phases: ensure heavy C++ targets wait for Dart frontend compilation (flutter_assemble) to finish.
+foreach(plugin ${FLUTTER_PLUGIN_LIST})
+  if(TARGET ${plugin}_plugin)
+    add_dependencies(${plugin}_plugin flutter_assemble)
+  endif()
+endforeach()
+foreach(ffi_plugin ${FLUTTER_FFI_PLUGIN_LIST})
+  if(TARGET ${ffi_plugin})
+    add_dependencies(${ffi_plugin} flutter_assemble)
+  endif()
+endforeach()
+if(TARGET piper)
+  add_dependencies(piper flutter_assemble)
+endif()
 
 
 # === Installation ===

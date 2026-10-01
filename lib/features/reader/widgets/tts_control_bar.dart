@@ -17,9 +17,11 @@ class TtsControlBar extends ConsumerWidget {
   const TtsControlBar({
     super.key,
     required this.onClose,
+    this.onPlay,
   });
 
   final VoidCallback onClose;
+  final VoidCallback? onPlay;
 
   static const List<double> _speeds = [0.75, 1.0, 1.25, 1.5, 2.0];
 
@@ -98,10 +100,18 @@ class TtsControlBar extends ConsumerWidget {
                 onPressed: !hasInstalledModels
                     ? null
                     : () {
+                        // ignore: avoid_print
+                        print('>>> [TTS UI] PLAY BUTTON PRESSED (isPlaying=$isPlaying, hasSentences=$hasSentences, onPlay=${onPlay != null}) <<<');
                         if (isPlaying) {
                           ttsNotifier.pause();
                         } else {
-                          ttsNotifier.play();
+                          if (hasSentences) {
+                            ttsNotifier.play();
+                          } else if (onPlay != null) {
+                            onPlay!();
+                          } else {
+                            ttsNotifier.play();
+                          }
                         }
                       },
               ),

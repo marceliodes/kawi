@@ -5,6 +5,9 @@ set(EPHEMERAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ephemeral")
 
 # Configuration provided via flutter tool.
 include(${EPHEMERAL_DIR}/generated_config.cmake)
+list(APPEND FLUTTER_TOOL_ENVIRONMENT
+  "DART_VM_OPTIONS=--no-concurrent-mark --marker-tasks=0 --scavenger-tasks=0"
+)
 
 # TODO: Move the rest of this into files in ephemeral. See
 # https://github.com/flutter/flutter/issues/57146.
@@ -80,6 +83,7 @@ add_custom_command(
     ${FLUTTER_TOOL_ENVIRONMENT}
     "${FLUTTER_ROOT}/packages/flutter_tools/bin/tool_backend.sh"
       ${FLUTTER_TARGET_PLATFORM} ${CMAKE_BUILD_TYPE}
+  COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_CURRENT_BINARY_DIR}/_phony_"
   VERBATIM
 )
 add_custom_target(flutter_assemble DEPENDS

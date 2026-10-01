@@ -106,6 +106,27 @@ class SentenceChunk {
   String toString() => 'SentenceChunk(index: $index, text: "$text")';
 }
 
+/// Represents a word within a sentence with character span and relative audio timing.
+class SentenceWord {
+  const SentenceWord({
+    required this.word,
+    required this.start,
+    required this.end,
+    this.startMs = 0,
+    this.endMs = 0,
+  });
+
+  final String word;
+  final int start;
+  final int end;
+  final int startMs;
+  final int endMs;
+
+  @override
+  String toString() =>
+      'SentenceWord(word: "$word", span: $start..$end, time: ${startMs}ms..${endMs}ms)';
+}
+
 /// State of TTS playback exposed to the UI.
 class TtsState {
   const TtsState({
@@ -324,11 +345,13 @@ class PlayAudioBytesEvent extends TtsEvent {
     required this.sentenceIndex,
     required this.wavBytes,
     this.durationMs = 0,
+    this.words = const [],
   });
 
   final int sentenceIndex;
   final Uint8List wavBytes;
   final int durationMs;
+  final List<SentenceWord> words;
 }
 
 class TtsErrorEvent extends TtsEvent {

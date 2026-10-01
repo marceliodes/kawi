@@ -218,6 +218,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   }
 
   Future<void> _startTts({String? fromSentence}) async {
+    // ignore: avoid_print
+    print('>>> [TTS UI] _startTts called (fromSentence: ${fromSentence != null}) <<<');
     try {
       final pageContent = await ref.read(
         documentPageContentProvider((
@@ -237,19 +239,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       }
 
       final ttsNotifier = ref.read(ttsStateProvider.notifier);
-      ttsNotifier.loadText(textToRead);
-
       setState(() {
         _isTtsBarVisible = true;
       });
 
-      ttsNotifier.play();
+      // ignore: avoid_print
+      print('>>> [TTS UI] calling ttsNotifier.speak() with ${textToRead.length} chars <<<');
+      ttsNotifier.speak(textToRead);
     } catch (e) {
       debugPrint('Error starting TTS: $e');
     }
   }
 
   void _toggleTts() {
+    // ignore: avoid_print
+    print('>>> [TTS UI] _toggleTts called <<<');
     final hasInstalledModels = ref.read(hasInstalledTtsModelsProvider);
     if (!hasInstalledModels) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -374,6 +378,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               right: 0,
               child: Center(
                 child: TtsControlBar(
+                  onPlay: _startTts,
                   onClose: () {
                     setState(() => _isTtsBarVisible = false);
                   },

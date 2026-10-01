@@ -1,0 +1,22 @@
+name: windows_file_picker
+description: Windows implementation of the file_picker plugin.
+version: 2.0.0
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.38.0"
+
+flutter:
+  plugin:
+    implements: file_picker
+    platforms:
+      windows:
+        dartPluginClass: FilePickerWindows
+
+dependencies:
+  flutter:
+    sdk: flutter
+  file_picker_platform_interface: ^4.0.0
+  cross_file: ^0.3.5+4
+  meta: ^1.17.0
+  path: ^1.9.1

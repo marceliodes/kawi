@@ -12,6 +12,7 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    - plugins/**
 
 linter:
   rules:

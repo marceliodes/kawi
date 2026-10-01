@@ -22,7 +22,9 @@ class AudioPlaybackService {
 
   final AudioPlayer _audioPlayer;
   StreamSubscription<void>? _playerCompleteSubscription;
+  StreamSubscription<Duration>? _playerPositionSubscription;
   bool _isAudioPlaying = false;
+  List<SentenceWord> _currentSentenceWords = const [];
 
   AudioPlayer get audioPlayer => _audioPlayer;
 
@@ -66,6 +68,9 @@ class AudioPlaybackService {
       _onAudioPlaybackComplete();
     });
 
+    _playerPositionSubscription =
+        _audioPlayer.onPositionChanged.listen(_onAudioPositionChanged);
+
     final completer = Completer<void>();
 
     _fromIsolatePort.listen((message) {
@@ -95,14 +100,20 @@ class AudioPlaybackService {
           completer.complete();
         }
       } else if (message is PlayAudioBytesEvent) {
-        _playWavBytes(
+        playWavBytes(
           message.wavBytes,
           sentenceIndex: message.sentenceIndex,
           durationMs: message.durationMs,
+          words: message.words,
         );
       } else if (message is StateUpdatedEvent) {
         stateNotifier.value = message.state;
       } else if (message is WordBoundaryEvent) {
+        stateNotifier.value = currentState.copyWith(
+          currentWord: message.word,
+          activeWordStart: message.start,
+          activeWordEnd: message.end,
+        );
         _wordBoundaryController.add(message);
       } else if (message is AudioBufferEvent) {
         _audioBufferController.add(message);
@@ -134,10 +145,11 @@ class AudioPlaybackService {
   }
 
   /// Plays synthesized WAV bytes on the main thread via AudioPlayer.
-  Future<void> _playWavBytes(
+  Future<void> playWavBytes(
     Uint8List wavBytes, {
     int sentenceIndex = 0,
     int durationMs = 0,
+    List<SentenceWord> words = const [],
   }) async {
     final currentIndex = sentenceIndex;
     // ignore: avoid_print
@@ -148,6 +160,24 @@ class AudioPlaybackService {
       _isAudioPlaying = false;
       stop();
       return;
+    }
+
+    _currentSentenceWords = words;
+    if (words.isNotEmpty) {
+      final first = words.first;
+      stateNotifier.value = currentState.copyWith(
+        currentWord: first.word,
+        activeWordStart: first.start,
+        activeWordEnd: first.end,
+      );
+      _wordBoundaryController.add(
+        WordBoundaryEvent(
+          sentenceIndex: currentIndex,
+          word: first.word,
+          start: first.start,
+          end: first.end,
+        ),
+      );
     }
 
     _isAudioPlaying = true;
@@ -168,6 +198,40 @@ class AudioPlaybackService {
     }
   }
 
+  void _onAudioPositionChanged(Duration position) {
+    if (!_isAudioPlaying || _currentSentenceWords.isEmpty) return;
+
+    final posMs = position.inMilliseconds;
+    SentenceWord? matched;
+    for (final w in _currentSentenceWords) {
+      if (posMs >= w.startMs && posMs < w.endMs) {
+        matched = w;
+        break;
+      }
+    }
+    matched ??= _currentSentenceWords.last;
+
+    if (matched.word.isNotEmpty &&
+        (matched.word != currentState.currentWord ||
+            matched.start != currentState.activeWordStart ||
+            matched.end != currentState.activeWordEnd)) {
+      stateNotifier.value = currentState.copyWith(
+        currentWord: matched.word,
+        activeWordStart: matched.start,
+        activeWordEnd: matched.end,
+      );
+
+      _wordBoundaryController.add(
+        WordBoundaryEvent(
+          sentenceIndex: currentState.currentSentenceIndex,
+          word: matched.word,
+          start: matched.start,
+          end: matched.end,
+        ),
+      );
+    }
+  }
+
   void _onAudioPlaybackComplete() {
     if (!_isAudioPlaying) return;
     _isAudioPlaying = false;
@@ -176,6 +240,8 @@ class AudioPlaybackService {
 
   /// Sets the active voice model and informs the isolate.
   void setActiveVoice(TtsVoiceModel? voice) {
+    // ignore: avoid_print
+    print('>>> [Kawi TTS] setActiveVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}, installed: ${voice?.isInstalled}) <<<');
     _activeVoice = voice;
     stateNotifier.value = stateNotifier.value.copyWith(
       activeVoice: voice,
@@ -197,6 +263,12 @@ class AudioPlaybackService {
     _sendCommand(
       LoadTextCommand(text, startSentenceIndex: startSentenceIndex),
     );
+  }
+
+  /// Loads text and immediately starts playback.
+  void speak(String text, {int startSentenceIndex = 0}) {
+    loadText(text, startSentenceIndex: startSentenceIndex);
+    play();
   }
 
   /// Starts or resumes playback.
@@ -235,6 +307,7 @@ class AudioPlaybackService {
   /// Stops playback on the main thread and instructs the isolate.
   void stop() {
     _isAudioPlaying = false;
+    _currentSentenceWords = const [];
     try {
       _audioPlayer.stop();
     } catch (_) {}
@@ -283,6 +356,8 @@ class AudioPlaybackService {
     _isAudioPlaying = false;
     _playerCompleteSubscription?.cancel();
     _playerCompleteSubscription = null;
+    _playerPositionSubscription?.cancel();
+    _playerPositionSubscription = null;
     try {
       _audioPlayer.stop();
       _audioPlayer.dispose();

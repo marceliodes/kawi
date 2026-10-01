@@ -99,6 +99,8 @@ class TtsIsolateWorker {
   }
 
   Future<void> _configureVoice(TtsVoiceModel? voice) async {
+    // ignore: avoid_print
+    print('>>> [TTS ISOLATE] _configureVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}) <<<');
     if (voice == null) {
       await _engineBridge?.stop();
       _engineBridge = null;
@@ -112,10 +114,21 @@ class TtsIsolateWorker {
 
     await _engineBridge?.dispose();
     _engineBridge = createEngineBridge(voice.engineType);
-    await _engineBridge!.initialize(
-      voice: voice,
-      rootIsolateToken: _rootIsolateToken,
-    );
+    // ignore: avoid_print
+    print('>>> [TTS ISOLATE] Created engine bridge: ${_engineBridge.runtimeType} <<<');
+    try {
+      await _engineBridge!.initialize(
+        voice: voice,
+        rootIsolateToken: _rootIsolateToken,
+      );
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] Engine bridge initialized successfully <<<');
+    } catch (e, st) {
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] Engine bridge initialization FAILED: $e <<<');
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] Stack trace:\n$st <<<');
+    }
 
     _state = _state.copyWith(
       activeVoice: voice,
@@ -146,7 +159,7 @@ class TtsIsolateWorker {
     _emitState();
   }
 
-  void _play() {
+  Future<void> _play() async {
     if (_sentences.isEmpty) {
       // ignore: avoid_print
       print('[TTS Worker] Play aborted: sentences list is empty.');
@@ -155,13 +168,15 @@ class TtsIsolateWorker {
 
     // Zero-model safeguard: do not throw or crash if no voice is available
     if (_engineBridge == null && _state.activeVoice == null) {
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] Play aborted: no engine bridge and no active voice <<<');
       _toMainPort.send(const TtsErrorEvent('No TTS engine downloaded.'));
       return;
     }
 
     final currentSentence = _sentences[_currentIndex];
     // ignore: avoid_print
-    print('[TTS Worker] Received sentence [${_currentIndex + 1}/${_sentences.length}]: "${currentSentence.text}"');
+    print('>>> [TTS ISOLATE] Received synthesis command for: "${currentSentence.text}" (engine=${_engineBridge?.runtimeType}, index=${_currentIndex + 1}/${_sentences.length}) <<<');
 
     _state = _state.copyWith(
       playbackState: TtsPlaybackState.playing,
@@ -181,33 +196,45 @@ class TtsIsolateWorker {
 
     // If an engine bridge is present, speak through it
     if (_engineBridge != null) {
-      _engineBridge!.speak(
-        currentSentence.text,
-        rate: _state.speechRate,
-        pitch: _state.pitch,
-        onWordBoundary: _onUtteranceProgress,
-        onDone: _onUtteranceCompleted,
-        onAudioBuffer: (samples, sampleRate) {
-          _toMainPort.send(
-            AudioBufferEvent(
-              sentenceIndex: _currentIndex,
-              samples: samples,
-              sampleRate: sampleRate,
-            ),
-          );
-        },
-        onAudioBytes: (wavBytes, durationMs) {
-          // ignore: avoid_print
-          print('[TTS Worker] Sending PlayAudioBytesEvent with ${wavBytes.length} bytes for sentence index $_currentIndex');
-          _toMainPort.send(
-            PlayAudioBytesEvent(
-              sentenceIndex: _currentIndex,
-              wavBytes: wavBytes,
-              durationMs: durationMs,
-            ),
-          );
-        },
-      );
+      try {
+        await _engineBridge!.speak(
+          currentSentence.text,
+          rate: _state.speechRate,
+          pitch: _state.pitch,
+          onWordBoundary: _onUtteranceProgress,
+          onDone: _onUtteranceCompleted,
+          onAudioBuffer: (samples, sampleRate) {
+            _toMainPort.send(
+              AudioBufferEvent(
+                sentenceIndex: _currentIndex,
+                samples: samples,
+                sampleRate: sampleRate,
+              ),
+            );
+          },
+          onAudioBytes: (wavBytes, durationMs, [words = const []]) {
+            // ignore: avoid_print
+            print('>>> [TTS ISOLATE] onAudioBytes: ${wavBytes.length} bytes, ${durationMs}ms for sentence index $_currentIndex <<<');
+            _toMainPort.send(
+              PlayAudioBytesEvent(
+                sentenceIndex: _currentIndex,
+                wavBytes: wavBytes,
+                durationMs: durationMs,
+                words: words,
+              ),
+            );
+          },
+        );
+      } catch (e, st) {
+        // ignore: avoid_print
+        print('>>> [TTS ISOLATE] ERROR in _engineBridge.speak(): $e <<<');
+        // ignore: avoid_print
+        print('>>> [TTS ISOLATE] Stack trace:\n$st <<<');
+        _toMainPort.send(TtsErrorEvent('TTS synthesis failed: $e'));
+      }
+    } else {
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] _engineBridge is null, no synthesis performed <<<');
     }
   }
 

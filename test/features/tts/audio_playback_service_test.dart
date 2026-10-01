@@ -12,9 +12,13 @@ class FakeAudioPlayer extends Fake implements AudioPlayer {
   bool isPlaying = false;
   bool isPaused = false;
   final StreamController<void> _completeController = StreamController<void>.broadcast();
+  final StreamController<Duration> _positionController = StreamController<Duration>.broadcast();
 
   @override
   Stream<void> get onPlayerComplete => _completeController.stream;
+
+  @override
+  Stream<Duration> get onPositionChanged => _positionController.stream;
 
   @override
   Future<void> play(
@@ -58,10 +62,15 @@ class FakeAudioPlayer extends Fake implements AudioPlayer {
   Future<void> dispose() async {
     isPlaying = false;
     await _completeController.close();
+    await _positionController.close();
   }
 
   void triggerComplete() {
     _completeController.add(null);
+  }
+
+  void emitPosition(Duration position) {
+    _positionController.add(position);
   }
 }
 
@@ -198,6 +207,51 @@ void main() {
       // Even after waiting longer than any previous fallback duration, index remains 0
       await Future<void>.delayed(const Duration(milliseconds: 400));
       expect(service.currentState.currentSentenceIndex, equals(0));
+    });
+
+    test('speak loads text and triggers playback via isolate and AudioPlayer', () async {
+      const mockVoice = TtsVoiceModel(
+        id: 'test-mock-voice',
+        name: 'Mock Test Voice',
+        engineType: TtsEngineType.mock,
+        isInstalled: true,
+      );
+      service.setActiveVoice(mockVoice);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      service.speak('Hello world speaking now.');
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      expect(service.currentState.playbackState, equals(TtsPlaybackState.playing));
+      expect(service.currentState.currentSentenceText, equals('Hello world speaking now.'));
+      expect(fakePlayer.isPlaying, isTrue);
+    });
+
+    test('onPositionChanged advances word highlights strictly in response to audio playback events', () async {
+      final sampleWav = encodeWav(samples: [0.0, 0.1, -0.1], sampleRate: 24000);
+      const words = [
+        SentenceWord(word: 'Hello', start: 0, end: 5, endMs: 200),
+        SentenceWord(word: 'world', start: 6, end: 11, startMs: 200, endMs: 400),
+      ];
+
+      await service.playWavBytes(
+        sampleWav,
+        durationMs: 400,
+        words: words,
+      );
+
+      // Initial word highlighted immediately
+      expect(service.currentState.currentWord, equals('Hello'));
+      expect(service.currentState.activeWordStart, equals(0));
+      expect(service.currentState.activeWordEnd, equals(5));
+
+      // Advance position to 250ms -> moves to "world"
+      fakePlayer.emitPosition(const Duration(milliseconds: 250));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(service.currentState.currentWord, equals('world'));
+      expect(service.currentState.activeWordStart, equals(6));
+      expect(service.currentState.activeWordEnd, equals(11));
     });
   });
 }
