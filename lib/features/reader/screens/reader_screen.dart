@@ -22,6 +22,7 @@ import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/providers/voice_manager_provider.dart';
 import '../../tts/screens/voice_manager_screen.dart';
+import '../../tts/services/tts_text_normalizer.dart';
 
 class ReaderScreen extends ConsumerStatefulWidget {
   const ReaderScreen({super.key, required this.document});
@@ -221,22 +222,153 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     // ignore: avoid_print
     print('>>> [TTS UI] _startTts called (fromSentence: ${fromSentence != null}) <<<');
     try {
-      final pageContent = await ref.read(
-        documentPageContentProvider((
-          filePath: widget.document.filePath,
-          pageIndex: _currentPageIndex,
-        )).future,
-      );
+      final totalPageCount =
+          widget.document.pageCount > 0 ? widget.document.pageCount : 1;
 
-      if (pageContent.plainText.trim().isEmpty) return;
+      // 1. Determine chapter page range [chapterStartPage, chapterEndPage) from TOC
+      int chapterStartPage = _currentPageIndex;
+      int chapterEndPage = _currentPageIndex + 1;
 
-      var textToRead = pageContent.plainText;
-      if (fromSentence != null && fromSentence.trim().isNotEmpty) {
-        final idx = textToRead.indexOf(fromSentence.trim());
-        if (idx != -1) {
-          textToRead = textToRead.substring(idx);
+      try {
+        final tocAsync = ref.read(documentTocProvider(widget.document.filePath));
+        final entries = tocAsync.asData?.value;
+        if (entries != null && entries.isNotEmpty) {
+          final flatList = <TocEntry>[];
+          void flatten(List<TocEntry> list) {
+            for (final item in list) {
+              flatList.add(item);
+              if (item.children.isNotEmpty) flatten(item.children);
+            }
+          }
+          flatten(entries);
+          flatList.sort((a, b) => a.pageIndex.compareTo(b.pageIndex));
+
+          TocEntry? currentChapter;
+          int? nextChapterStart;
+          for (var i = 0; i < flatList.length; i++) {
+            if (flatList[i].pageIndex <= _currentPageIndex) {
+              currentChapter = flatList[i];
+              for (var j = i + 1; j < flatList.length; j++) {
+                if (flatList[j].pageIndex > currentChapter.pageIndex) {
+                  nextChapterStart = flatList[j].pageIndex;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (currentChapter != null) {
+            chapterStartPage = currentChapter.pageIndex;
+            if (nextChapterStart != null && nextChapterStart > chapterStartPage) {
+              chapterEndPage = nextChapterStart;
+            } else {
+              chapterEndPage = totalPageCount;
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 2. Also take into account visible items if continuous scroll is active
+      final settings = ref.read(readerSettingsProvider);
+      var effectiveEndPage = chapterEndPage;
+      if (!settings.isPaginated &&
+          _itemPositionsListener.itemPositions.value.isNotEmpty) {
+        for (final pos in _itemPositionsListener.itemPositions.value) {
+          if (pos.itemTrailingEdge > 0.0 && pos.itemLeadingEdge < 1.0) {
+            if (pos.index + 1 > effectiveEndPage) {
+              effectiveEndPage = pos.index + 1;
+            }
+          }
         }
       }
+
+      // 3. Collect page text blocks across the full chapter / visible range
+      final pageTexts = <String>[];
+      final startIdx = _currentPageIndex;
+      final targetEnd = effectiveEndPage > startIdx ? effectiveEndPage : (startIdx + 1);
+
+      for (var idx = startIdx; idx < targetEnd && idx < totalPageCount; idx++) {
+        final pageContent = await ref.read(
+          documentPageContentProvider((
+            filePath: widget.document.filePath,
+            pageIndex: idx,
+          )).future,
+        );
+        final raw = pageContent.plainText.trim();
+        if (raw.isNotEmpty) {
+          pageTexts.add(raw);
+        }
+      }
+
+      // If the collected text is short (e.g. only a heading < 1500 chars) and more pages exist in the chapter/document,
+      // continue collecting subsequent pages so the complete chapter text is passed.
+      var nextIdx = targetEnd;
+      while (nextIdx < totalPageCount) {
+        var currentCombined = pageTexts.join('\n\n');
+        currentCombined = currentCombined.replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '');
+        currentCombined = currentCombined.replaceAll(RegExp(r'<[^>]*>'), '');
+        currentCombined = currentCombined.replaceAll(RegExp(r'\[\s*\]'), '');
+        if (currentCombined.trim().length >= 1500) break;
+
+        final nextContent = await ref.read(
+          documentPageContentProvider((
+            filePath: widget.document.filePath,
+            pageIndex: nextIdx,
+          )).future,
+        );
+        final raw = nextContent.plainText.trim();
+        if (raw.isNotEmpty) {
+          pageTexts.add(raw);
+        }
+        nextIdx++;
+      }
+
+      var textToRead = pageTexts.join('\n\n');
+
+      // 4. Filter out [image] placeholders and non-text tokens
+      textToRead = textToRead.replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '');
+      textToRead = textToRead.replaceAll(RegExp(r'<[^>]*>'), '');
+      textToRead = textToRead.replaceAll(RegExp(r'\[\s*\]'), '');
+
+      // Normalize line breaks into paragraph structure
+      textToRead = TtsTextNormalizer.normalizeParagraphWhitespace(textToRead);
+
+      if (fromSentence != null && fromSentence.trim().isNotEmpty) {
+        final needle = fromSentence.replaceAll(RegExp(r'\s+'), ' ').trim();
+        final normalizedForSearch = textToRead.replaceAll(RegExp(r'\s+'), ' ');
+        final idx = normalizedForSearch.indexOf(needle);
+        if (idx != -1) {
+          textToRead = textToRead.substring(idx.clamp(0, textToRead.length));
+        } else {
+          // If needle was not found in visible text, search subsequent pages
+          for (var i = nextIdx; i < totalPageCount; i++) {
+            final content = await ref.read(
+              documentPageContentProvider((
+                filePath: widget.document.filePath,
+                pageIndex: i,
+              )).future,
+            );
+            var pText = content.plainText;
+            pText = pText.replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '');
+            pText = pText.replaceAll(RegExp(r'<[^>]*>'), '');
+            pText = pText.replaceAll(RegExp(r'\[\s*\]'), '');
+            pText = TtsTextNormalizer.normalizeParagraphWhitespace(pText);
+            final pIdx = pText.indexOf(needle);
+            if (pIdx != -1) {
+              textToRead = pText.substring(pIdx);
+              break;
+            }
+          }
+        }
+      }
+
+      // Final cleanup of residual orphan brackets and whitespace check
+      textToRead = textToRead.replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '');
+      textToRead = textToRead.replaceAll(RegExp(r'<[^>]*>'), '');
+      textToRead = textToRead.replaceAll(RegExp(r'\[\s*\]'), '');
+      textToRead = textToRead.trim();
+
+      if (textToRead.isEmpty || !TtsTextNormalizer.hasAlphanumeric(textToRead)) return;
 
       final ttsNotifier = ref.read(ttsStateProvider.notifier);
       setState(() {

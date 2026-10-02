@@ -124,5 +124,125 @@ void main() {
       expect(chunks[1].text, equals('Chapter 1'));
       expect(chunks[2].text, equals('She gave it to us in the USA.'));
     });
+
+    test('normalizes chapter opener "IT WAS" to "It was" to prevent pronunciation as "I.T."', () {
+      expect(TtsTextNormalizer.normalizeAllCaps('IT WAS'), equals('It was'));
+      expect(
+        TtsTextNormalizer.normalizeAllCaps('IT WAS a cold and stormy night.'),
+        equals('It was a cold and stormy night.'),
+      );
+      expect(
+        TtsTextNormalizer.normalizeAllCaps('“IT WAS,” he murmured.'),
+        equals('“It was,” he murmured.'),
+      );
+    });
+
+    test('replaces soft line breaks within paragraphs with space so clauses are not cut', () {
+      const rawChapter =
+          'IT WAS the best of times,\n'
+          'it was the worst of times,\n'
+          'it was the age of wisdom,\n'
+          'it was the age of foolishness.\n\n'
+          'Here is the second paragraph,\n'
+          'which also has soft line breaks!';
+
+      final chunks = TtsTextNormalizer.splitIntoSentences(rawChapter);
+      expect(chunks.length, equals(2));
+      expect(
+        chunks[0].text,
+        equals(
+          'It was the best of times, '
+          'it was the worst of times, '
+          'it was the age of wisdom, '
+          'it was the age of foolishness.',
+        ),
+      );
+      expect(
+        chunks[1].text,
+        equals('Here is the second paragraph, which also has soft line breaks!'),
+      );
+    });
+
+    test('only splits on terminal punctuation (. ! ?) followed by whitespace or quotes or double newlines', () {
+      const text =
+          'Clause one, not ending;\n'
+          'clause two: still not ending.\n\n'
+          '“Is that so?” asked Alice. “Yes!” replied Bob.';
+
+      final chunks = TtsTextNormalizer.splitIntoSentences(text);
+      expect(chunks.length, equals(3));
+      expect(chunks[0].text, equals('Clause one, not ending; clause two: still not ending.'));
+      expect(chunks[1].text, equals('“Is that so?” asked Alice.'));
+      expect(chunks[2].text, equals('“Yes!” replied Bob.'));
+    });
+
+    test('filterPlaceholdersAndTags strips [image], [image:...], and raw HTML tags', () {
+      expect(TtsTextNormalizer.filterPlaceholdersAndTags('[image]'), equals(''));
+      expect(TtsTextNormalizer.filterPlaceholdersAndTags('[IMAGE:1]'), equals(''));
+      expect(TtsTextNormalizer.filterPlaceholdersAndTags('[image:cover.jpg]'), equals(''));
+      expect(
+        TtsTextNormalizer.filterPlaceholdersAndTags('<p>Hello <b>world</b>!</p>'),
+        equals('Hello world!'),
+      );
+      expect(
+        TtsTextNormalizer.filterPlaceholdersAndTags('Look at this [image:header.png] picture.'),
+        equals('Look at this  picture.'),
+      );
+    });
+
+    test('splitIntoSentences filters out image placeholders and raw HTML tags without creating empty sentences', () {
+      const input =
+          '[image:cover]\n\n'
+          '<p>IT WAS a dark and stormy night.</p>\n\n'
+          '[image:1]\n\n'
+          '<div><span>The wind began to howl.</span></div>\n\n'
+          '[image]';
+
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(2));
+      expect(chunks[0].text, equals('It was a dark and stormy night.'));
+      expect(chunks[1].text, equals('The wind began to howl.'));
+    });
+
+    test('splitIntoSentences drops whitespace-only and tag-only chunks completely', () {
+      const input = '   [image:1]   \n\n<p>   </p>\n\n   \n\nValid sentence.';
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(1));
+      expect(chunks[0].text, equals('Valid sentence.'));
+    });
+
+    test('discards non-alphanumeric chunks so sentence 1 begins directly with actual text', () {
+      const input =
+          '[image:cover.jpg] [image:1]\n\n'
+          '[]\n\n'
+          '* * *\n\n'
+          'Chapter 1: The Diary (Part 1)\n\n'
+          'It was a quiet evening.';
+
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(2));
+      expect(chunks[0].index, equals(0));
+      expect(chunks[0].text, equals('Chapter 1: The Diary (Part 1)'));
+      expect(chunks[1].index, equals(1));
+      expect(chunks[1].text, equals('It was a quiet evening.'));
+    });
+
+    test('hasAlphanumeric correctly identifies strings with or without alphanumeric chars', () {
+      expect(TtsTextNormalizer.hasAlphanumeric(''), isFalse);
+      expect(TtsTextNormalizer.hasAlphanumeric('   '), isFalse);
+      expect(TtsTextNormalizer.hasAlphanumeric('[]'), isFalse);
+      expect(TtsTextNormalizer.hasAlphanumeric('* * *'), isFalse);
+      expect(TtsTextNormalizer.hasAlphanumeric('---'), isFalse);
+      expect(TtsTextNormalizer.hasAlphanumeric('. ! ?'), isFalse);
+      expect(TtsTextNormalizer.hasAlphanumeric('Chapter 1'), isTrue);
+      expect(TtsTextNormalizer.hasAlphanumeric('42'), isTrue);
+      expect(TtsTextNormalizer.hasAlphanumeric('a'), isTrue);
+    });
+
+    test('normalizeSentenceWhitespace strips tags, orphan brackets, and collapses whitespace', () {
+      const input = '  [image:test.png]   <p>Hello</p>  []   world!   ';
+      final result = TtsTextNormalizer.normalizeSentenceWhitespace(input);
+      expect(result, equals('Hello world!'));
+    });
   });
 }

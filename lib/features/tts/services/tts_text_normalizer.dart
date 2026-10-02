@@ -14,7 +14,7 @@ class TtsTextNormalizer {
     // English pronouns, prepositions, articles:
     'IT', 'US', 'IN', 'ON', 'AT', 'THE', 'A', 'AN', 'HE', 'SHE', 'WE', 'ME', 'MY',
     // Additional common pronouns, prepositions, articles, verbs:
-    'HIM', 'HER', 'HIS', 'THEY', 'THEM', 'THEIR', 'THEIRS', 'ITS', 'OUR', 'OURS',
+    'HIM', 'HER', 'HIS', 'THEY', 'THEM', 'THEIR', 'THEIRS', 'ITS', "IT'S", 'IT’S', 'OUR', 'OURS',
     'YOU', 'YOUR', 'YOURS', 'WHO', 'WHOM', 'WHOSE', 'WHICH', 'WHAT',
     'OF', 'TO', 'FOR', 'WITH', 'FROM', 'BY', 'AS', 'INTO', 'ONTO', 'UPON', 'ABOUT',
     'IS', 'AM', 'ARE', 'WAS', 'WERE', 'BE', 'BEEN', 'BEING',
@@ -40,7 +40,38 @@ class TtsTextNormalizer {
     'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII',
   };
 
+  /// Filters out image placeholder tags and raw HTML tags:
+  /// - Strips image placeholders like [image] or [image:1] or [image:cover.jpg]
+  /// - Strips raw HTML tags like <p>, </span>, etc.
+  /// - Strips residual orphan brackets like [] or [ ]
+  static String filterPlaceholdersAndTags(String text) {
+    if (text.isEmpty) return text;
+    var result = text.replaceAll(
+      RegExp(r'\[image[^\]]*\]', caseSensitive: false),
+      '',
+    );
+    result = result.replaceAll(RegExp(r'<[^>]*>'), '');
+    result = result.replaceAll(RegExp(r'\[\s*\]'), '');
+    return result;
+  }
+
+  /// Checks if a string contains any alphanumeric character ([a-zA-Z0-9]).
+  static bool hasAlphanumeric(String text) {
+    return RegExp(r'[a-zA-Z0-9]').hasMatch(text);
+  }
+
+  /// Normalizes whitespace in an individual sentence or chunk:
+  /// - Strips image placeholders, HTML tags, orphan brackets
+  /// - Collapses any sequence of whitespace to a single space
+  /// - Trims leading and trailing whitespace
+  static String normalizeSentenceWhitespace(String text) {
+    var result = filterPlaceholdersAndTags(text);
+    result = result.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return result;
+  }
+
   /// Normalizes whitespace inside paragraphs before sentence tokenization:
+  /// - Strips image markers and HTML tags.
   /// - Standardizes CRLF and CR to LF.
   /// - Standardizes paragraph breaks (\n\n+) to clean '\n\n'.
   /// - Replaces isolated single newlines surrounded by text with a single space ' ',
@@ -49,11 +80,14 @@ class TtsTextNormalizer {
   static String normalizeParagraphWhitespace(String text) {
     if (text.isEmpty) return text;
 
+    // 0. Filter out image placeholder tags and raw HTML tags
+    var result = filterPlaceholdersAndTags(text);
+
     // 1. Convert all line break styles to standard \n
-    var result = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    result = result.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
 
     // 2. Standardize multiple newlines (paragraph boundaries) with optional horizontal spaces
-    result = result.replaceAll(RegExp(r'\n[ \t]*\n+'), '\n\n');
+    result = result.replaceAll(RegExp(r'[ \t]*\n(?:[ \t]*\n)+[ \t]*'), '\n\n');
 
     // 3. Replace isolated single newlines (surrounded by text / horizontal spaces) with a single space
     result = result.replaceAll(RegExp(r'[ \t]*(?<!\n)\n(?!\n)[ \t]*'), ' ');
@@ -157,14 +191,45 @@ class TtsTextNormalizer {
     final boundaryRegex = RegExp(
       r'(?:'
       r'(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e))'
-      r'''([.!?]+["'”’»\)]*)\s+(?![a-z])'''
+      r'''([.!?]+["'”’»\)]*)(?:\s+(?![a-z])|(?=["'“]))'''
       r'|'
       r'\n\n+'
       r')',
     );
 
     var currentStart = 0;
-    var sentenceIndex = 0;
+
+    void addSentenceIfValid(String slice, int chunkStart) {
+      final rawSentence = filterPlaceholdersAndTags(slice).trim();
+      if (rawSentence.isNotEmpty && hasAlphanumeric(rawSentence)) {
+        final processedText = normalizeAllCaps(rawSentence).trim();
+        var cleanSentence = filterPlaceholdersAndTags(processedText);
+        cleanSentence = cleanSentence.replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (cleanSentence.isNotEmpty && hasAlphanumeric(cleanSentence)) {
+          final words = cleanSentence
+              .split(RegExp(r'\s+'))
+              .where((w) => w.isNotEmpty && hasAlphanumeric(w))
+              .toList();
+
+          if (words.isNotEmpty) {
+            final leadingSpaces = slice.indexOf(rawSentence);
+            final actualStart =
+                chunkStart + (leadingSpaces >= 0 ? leadingSpaces : 0);
+            final actualEnd = actualStart + rawSentence.length;
+
+            sentences.add(
+              SentenceChunk(
+                index: sentences.length,
+                text: cleanSentence,
+                charStart: actualStart,
+                charEnd: actualEnd,
+                words: words,
+              ),
+            );
+          }
+        }
+      }
+    }
 
     for (final match in boundaryRegex.allMatches(normalized)) {
       final punctGroup = match.group(1);
@@ -180,56 +245,13 @@ class TtsTextNormalizer {
       currentStart = match.end;
 
       final slice = normalized.substring(chunkStart, chunkEnd);
-      final rawSentence = slice.trim();
-
-      if (rawSentence.isNotEmpty) {
-        final processedText = normalizeAllCaps(rawSentence);
-        final words = processedText
-            .split(RegExp(r'\s+'))
-            .where((w) => w.isNotEmpty)
-            .toList();
-
-        final leadingSpaces = slice.indexOf(rawSentence);
-        final actualStart = chunkStart + (leadingSpaces >= 0 ? leadingSpaces : 0);
-        final actualEnd = actualStart + rawSentence.length;
-
-        sentences.add(
-          SentenceChunk(
-            index: sentenceIndex++,
-            text: processedText,
-            charStart: actualStart,
-            charEnd: actualEnd,
-            words: words,
-          ),
-        );
-      }
+      addSentenceIfValid(slice, chunkStart);
     }
 
     // Remainder after the last matched boundary
     if (currentStart < normalized.length) {
       final slice = normalized.substring(currentStart);
-      final rawSentence = slice.trim();
-      if (rawSentence.isNotEmpty) {
-        final processedText = normalizeAllCaps(rawSentence);
-        final words = processedText
-            .split(RegExp(r'\s+'))
-            .where((w) => w.isNotEmpty)
-            .toList();
-
-        final leadingSpaces = slice.indexOf(rawSentence);
-        final actualStart = currentStart + (leadingSpaces >= 0 ? leadingSpaces : 0);
-        final actualEnd = actualStart + rawSentence.length;
-
-        sentences.add(
-          SentenceChunk(
-            index: sentenceIndex,
-            text: processedText,
-            charStart: actualStart,
-            charEnd: actualEnd,
-            words: words,
-          ),
-        );
-      }
+      addSentenceIfValid(slice, currentStart);
     }
 
     return sentences;

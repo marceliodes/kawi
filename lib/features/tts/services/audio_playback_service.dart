@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/tts_models.dart';
 import 'tts_isolate_worker.dart';
+import 'tts_text_normalizer.dart';
 
 class _PrebufferedAudio {
   final int sentenceIndex;
@@ -364,13 +365,14 @@ class AudioPlaybackService {
     );
   }
 
-  /// Loads text into the worker queue.
+  /// Loads text into the worker queue, replacing soft line breaks within paragraphs.
   void loadText(String text, {int startSentenceIndex = 0}) {
     _prebufferedAudio = null;
+    final normalized = TtsTextNormalizer.normalizeParagraphWhitespace(text);
     // ignore: avoid_print
-    print('[Kawi TTS] loadText called with ${text.length} chars (startSentenceIndex: $startSentenceIndex)');
+    print('[Kawi TTS] loadText called with ${normalized.length} chars (startSentenceIndex: $startSentenceIndex)');
     _sendCommand(
-      LoadTextCommand(text, startSentenceIndex: startSentenceIndex),
+      LoadTextCommand(normalized, startSentenceIndex: startSentenceIndex),
     );
   }
 

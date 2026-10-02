@@ -60,9 +60,10 @@ class TtsIsolateWorker {
         _configureVoice(voice);
 
       case LoadTextCommand(:final text, :final startSentenceIndex):
+        final cleanText = TtsTextNormalizer.normalizeParagraphWhitespace(text);
         // ignore: avoid_print
-        print('[TTS Worker] LoadTextCommand received with ${text.length} chars (startSentenceIndex: $startSentenceIndex)');
-        _loadText(text, startSentenceIndex);
+        print('[TTS Worker] LoadTextCommand received with ${cleanText.length} chars (startSentenceIndex: $startSentenceIndex)');
+        _loadText(cleanText, startSentenceIndex);
 
       case PlayCommand():
         // ignore: avoid_print
@@ -162,7 +163,33 @@ class TtsIsolateWorker {
     _prebufferGeneration++;
     _prebufferingIndex = null;
     _prebufferedSentence = null;
-    _sentences = _splitIntoSentences(rawText);
+    final cleanText = TtsTextNormalizer.normalizeParagraphWhitespace(rawText);
+    final rawSentences = _splitIntoSentences(cleanText);
+
+    // Remove any empty or whitespace-only sentences or sentences containing no alphanumeric characters
+    // so TTS never attempts to speak them, and Sentence 1 begins directly with actual text.
+    final cleanSentences = <SentenceChunk>[];
+    for (final s in rawSentences) {
+      var filteredText =
+          TtsTextNormalizer.filterPlaceholdersAndTags(s.text);
+      filteredText = filteredText.replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (filteredText.isNotEmpty && TtsTextNormalizer.hasAlphanumeric(filteredText)) {
+        cleanSentences.add(
+          SentenceChunk(
+            index: cleanSentences.length,
+            text: filteredText,
+            charStart: s.charStart,
+            charEnd: s.charEnd,
+            words: s.words
+                .map((w) => w.trim())
+                .where((w) => w.isNotEmpty && TtsTextNormalizer.hasAlphanumeric(w))
+                .toList(),
+          ),
+        );
+      }
+    }
+    _sentences = cleanSentences;
+
     _currentIndex = _sentences.isEmpty
         ? 0
         : startIndex.clamp(0, _sentences.length - 1);
@@ -190,6 +217,11 @@ class TtsIsolateWorker {
       return;
     }
 
+    if (_currentIndex >= _sentences.length) {
+      _stop();
+      return;
+    }
+
     // Zero-model safeguard: do not throw or crash if no voice is available
     if (_engineBridge == null && _state.activeVoice == null) {
       // ignore: avoid_print
@@ -199,6 +231,13 @@ class TtsIsolateWorker {
     }
 
     final currentSentence = _sentences[_currentIndex];
+    var cleanSentenceText =
+        TtsTextNormalizer.filterPlaceholdersAndTags(currentSentence.text);
+    cleanSentenceText = cleanSentenceText.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (cleanSentenceText.isEmpty || !TtsTextNormalizer.hasAlphanumeric(cleanSentenceText)) {
+      _onUtteranceCompleted(alreadyPlaying: true);
+      return;
+    }
     // ignore: avoid_print
     print('>>> [TTS ISOLATE] Received synthesis command for: "${currentSentence.text}" (engine=${_engineBridge?.runtimeType}, index=${_currentIndex + 1}/${_sentences.length}) <<<');
 

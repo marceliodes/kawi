@@ -168,7 +168,14 @@ class KokoroEngineBridge implements TtsEngineBridge {
     _isSpeaking = true;
     _isPaused = false;
 
-    final normalizedText = TtsTextNormalizer.normalizeAllCaps(text);
+    var cleaned = TtsTextNormalizer.filterPlaceholdersAndTags(text);
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (cleaned.isEmpty || !TtsTextNormalizer.hasAlphanumeric(cleaned)) {
+      onDone();
+      return;
+    }
+
+    final normalizedText = TtsTextNormalizer.normalizeAllCaps(cleaned);
     final words = _extractWords(normalizedText);
     if (words.isEmpty) {
       onDone();
@@ -371,8 +378,13 @@ class PiperEngineBridge implements TtsEngineBridge {
     _modelPath = voice.localPath;
     _resolvedModelPath = await _resolvePiperModelPath(voice.id);
     try {
-      if (_resolvedModelPath != null && _resolvedModelPath!.isNotEmpty) {
+      if (_resolvedModelPath != null &&
+          _resolvedModelPath!.isNotEmpty &&
+          File(_resolvedModelPath!).existsSync()) {
         Piper.modelPath = _resolvedModelPath!;
+        Piper.initModel(_resolvedModelPath!);
+        // ignore: avoid_print
+        print('>>> [PIPER BRIDGE] Persistent Piper session loaded in memory for: $_resolvedModelPath <<<');
       }
       // ignore: avoid_print
       print('>>> [PIPER BRIDGE] initialize() for voice: ${voice.name} (id: ${voice.id}), resolvedPath: $_resolvedModelPath (exists: ${_resolvedModelPath != null && File(_resolvedModelPath!).existsSync()}) <<<');
@@ -399,11 +411,22 @@ class PiperEngineBridge implements TtsEngineBridge {
     _isSpeaking = true;
     _isPaused = false;
 
-    final modelPath = await _resolvePiperModelPath(_activeVoiceId);
+    final modelPath = _resolvedModelPath ?? await _resolvePiperModelPath(_activeVoiceId);
+    if (modelPath != null && _resolvedModelPath != modelPath) {
+      _resolvedModelPath = modelPath;
+      Piper.modelPath = modelPath;
+    }
     // ignore: avoid_print
     print('>>> [PIPER BRIDGE] speak() called with text: "$text", model: "$modelPath" <<<');
 
-    final normalizedText = TtsTextNormalizer.normalizeAllCaps(text);
+    var cleaned = TtsTextNormalizer.filterPlaceholdersAndTags(text);
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (cleaned.isEmpty || !TtsTextNormalizer.hasAlphanumeric(cleaned)) {
+      onDone();
+      return;
+    }
+
+    final normalizedText = TtsTextNormalizer.normalizeAllCaps(cleaned);
     final words = _extractWords(normalizedText);
     if (words.isEmpty) {
       onDone();
@@ -414,7 +437,7 @@ class PiperEngineBridge implements TtsEngineBridge {
       try {
         Piper.modelPath = modelPath;
         // ignore: avoid_print
-        print('>>> [PIPER BRIDGE] Starting Piper speech generation with model: $modelPath <<<');
+        print('>>> [PIPER BRIDGE] Starting Piper speech generation with in-memory model session: $modelPath <<<');
         final file = await Piper.generateSpeech(normalizedText);
         // ignore: avoid_print
         print('>>> [PIPER BRIDGE] Piper generateSpeech returned file: ${file.path} (exists: ${file.existsSync()}) <<<');
@@ -465,6 +488,7 @@ class PiperEngineBridge implements TtsEngineBridge {
   @override
   Future<void> dispose() async {
     await stop();
+    Piper.clearModel();
     _resolvedModelPath = null;
     _initialized = false;
   }
@@ -510,7 +534,14 @@ class MockTtsEngineBridge implements TtsEngineBridge {
     _isSpeaking = true;
     _isPaused = false;
 
-    final words = _extractWords(text);
+    var cleaned = TtsTextNormalizer.filterPlaceholdersAndTags(text);
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (cleaned.isEmpty || !TtsTextNormalizer.hasAlphanumeric(cleaned)) {
+      onDone();
+      return;
+    }
+
+    final words = _extractWords(cleaned);
     if (words.isEmpty) {
       onDone();
       return;

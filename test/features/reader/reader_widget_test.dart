@@ -15,7 +15,12 @@ import 'package:kawi/features/reader/providers/reader_settings_provider.dart';
 import 'package:kawi/features/reader/screens/reader_screen.dart';
 import 'package:kawi/features/reader/services/document_extractor.dart';
 import 'package:kawi/features/reader/widgets/reader_canvas.dart';
+import 'package:kawi/features/reader/widgets/tts_control_bar.dart';
 import 'package:kawi/features/reader/widgets/typography_settings_sheet.dart';
+import 'package:kawi/features/tts/models/tts_models.dart';
+import 'package:kawi/features/tts/providers/tts_provider.dart';
+import 'package:kawi/features/tts/providers/voice_manager_provider.dart';
+import 'package:kawi/features/tts/services/tts_text_normalizer.dart';
 
 Widget _createReaderTestApp({
   required ProviderContainer container,
@@ -254,4 +259,158 @@ void main() {
     expect(find.textContaining('Page 4 of 12'), findsOneWidget);
     expect(find.text('Book Two'), findsWidgets);
   });
+
+  testWidgets(
+    'tapping Listen with TTS collects full chapter text across pages when initial page is a short heading',
+    (tester) async {
+      final mockNotifier = _MockReaderTtsNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockNotifier),
+          documentTocProvider(testDoc.filePath)
+              .overrideWith((ref) => Future.value(sampleToc)),
+          documentPageContentProvider.overrideWith((ref, arg) {
+            if (arg.pageIndex == 0) {
+              // Stub heading like "CHAPTER 1" (9 chars)
+              return Future.value(
+                const PageContent(
+                  pageIndex: 0,
+                  plainText: 'CHAPTER 1',
+                  words: [],
+                ),
+              );
+            } else {
+              return Future.value(
+                const PageContent(
+                  pageIndex: 1,
+                  plainText:
+                      'It was the best of times, it was the worst of times.\n'
+                      'It was the age of wisdom, it was the age of foolishness.\n'
+                      'It was the epoch of belief.',
+                  words: [],
+                ),
+              );
+            }
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _createReaderTestApp(container: container, document: testDoc),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // Tap the Read Aloud (TTS) button in top bar
+      final ttsButton = find.byTooltip('Read Aloud (TTS)');
+      expect(ttsButton, findsOneWidget);
+      await tester.tap(ttsButton);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // TTS control bar should now be visible
+      expect(find.byType(TtsControlBar), findsOneWidget);
+
+      // Verify that speak() received text from page 0 AND page 1
+      expect(mockNotifier.lastSpokenText, isNotNull);
+      expect(mockNotifier.lastSpokenText, contains('CHAPTER 1'));
+      expect(mockNotifier.lastSpokenText, contains('It was the best of times'));
+      expect(mockNotifier.lastSpokenText, contains('It was the epoch of belief.'));
+
+      // Verify that sentences from all visible pages were collected (not just 1/1 for page 0)
+      expect(mockNotifier.state.totalSentences, greaterThanOrEqualTo(4));
+      expect(
+        find.text('1/${mockNotifier.state.totalSentences}'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'tapping Listen with TTS strips [image] placeholders and ensures sentence 1 begins directly with chapter title',
+    (tester) async {
+      final mockNotifier = _MockReaderTtsNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockNotifier),
+          documentTocProvider(testDoc.filePath)
+              .overrideWith((ref) => Future.value(sampleToc)),
+          documentPageContentProvider.overrideWith((ref, arg) {
+            if (arg.pageIndex == 0) {
+              return Future.value(
+                const PageContent(
+                  pageIndex: 0,
+                  plainText: '[image:cover.jpg] [image:1] Chapter 1: The Diary (Part 1)',
+                  words: [],
+                ),
+              );
+            } else {
+              return Future.value(
+                const PageContent(
+                  pageIndex: 1,
+                  plainText:
+                      'It was a dark and quiet evening.\n'
+                      'The stars were shining bright.',
+                  words: [],
+                ),
+              );
+            }
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _createReaderTestApp(container: container, document: testDoc),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+
+      final ttsButton = find.byTooltip('Read Aloud (TTS)');
+      await tester.tap(ttsButton);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(mockNotifier.lastSpokenText, isNotNull);
+      expect(mockNotifier.lastSpokenText, isNot(contains('[image')));
+      expect(mockNotifier.lastSpokenText, contains('Chapter 1: The Diary (Part 1)'));
+      expect(mockNotifier.lastSpokenText, contains('It was a dark and quiet evening.'));
+
+      // Sentence 1 must be the chapter title itself, not empty or bracket tokens
+      expect(mockNotifier.state.currentSentenceIndex, equals(0));
+      expect(
+        mockNotifier.state.currentSentenceText,
+        equals('Chapter 1: The Diary (Part 1)'),
+      );
+    },
+  );
+}
+
+class _MockReaderTtsNotifier extends TtsStateNotifier {
+  _MockReaderTtsNotifier() : super();
+
+  String? lastSpokenText;
+
+  @override
+  TtsState build() => const TtsState();
+
+  @override
+  void speak(String text, {int startSentenceIndex = 0}) {
+    lastSpokenText = text;
+    final sentences = TtsTextNormalizer.splitIntoSentences(text);
+    state = state.copyWith(
+      playbackState: TtsPlaybackState.playing,
+      currentSentenceIndex: startSentenceIndex,
+      totalSentences: sentences.length,
+      currentSentenceText: sentences.isNotEmpty ? sentences[startSentenceIndex].text : '',
+    );
+  }
+
+  @override
+  void stop() {
+    state = state.copyWith(playbackState: TtsPlaybackState.stopped);
+  }
 }

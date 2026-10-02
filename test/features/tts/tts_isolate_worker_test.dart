@@ -64,6 +64,86 @@ void main() {
       expect(state.playbackState, equals(TtsPlaybackState.stopped));
     });
 
+    test('LoadTextCommand normalizes soft line breaks within paragraphs without cutting clauses', () async {
+      final stateCompleter = Completer<TtsState>();
+
+      broadcastController.stream.listen((message) {
+        if (message is StateUpdatedEvent) {
+          if (!stateCompleter.isCompleted) {
+            stateCompleter.complete(message.state);
+          }
+        }
+      });
+
+      const softBreakText =
+          'IT WAS the best of times,\n'
+          'it was the worst of times.\n\n'
+          'Second paragraph starts here.';
+
+      toWorkerPort.send(const LoadTextCommand(softBreakText));
+
+      final state = await stateCompleter.future;
+      expect(state.totalSentences, equals(2));
+      expect(
+        state.currentSentenceText,
+        equals('It was the best of times, it was the worst of times.'),
+      );
+    });
+
+    test('LoadTextCommand filters out image markers and HTML tags without adding empty sentences', () async {
+      final stateCompleter = Completer<TtsState>();
+
+      broadcastController.stream.listen((message) {
+        if (message is StateUpdatedEvent) {
+          if (!stateCompleter.isCompleted) {
+            stateCompleter.complete(message.state);
+          }
+        }
+      });
+
+      const textWithTags =
+          '[image:cover]\n\n'
+          '<p>First real sentence.</p>\n\n'
+          '[image:1]\n\n'
+          'Second real sentence.\n\n'
+          '[image]';
+
+      toWorkerPort.send(const LoadTextCommand(textWithTags));
+
+      final state = await stateCompleter.future;
+      expect(state.totalSentences, equals(2));
+      expect(state.currentSentenceText, equals('First real sentence.'));
+    });
+
+    test('LoadTextCommand discards non-alphanumeric chunks so sentence 1 begins directly with chapter title', () async {
+      final stateCompleter = Completer<TtsState>();
+
+      broadcastController.stream.listen((message) {
+        if (message is StateUpdatedEvent) {
+          if (!stateCompleter.isCompleted) {
+            stateCompleter.complete(message.state);
+          }
+        }
+      });
+
+      const chapterText =
+          '[image:cover.jpg] [image:1]\n\n'
+          '[]\n\n'
+          '* * *\n\n'
+          'Chapter 1: The Diary (Part 1)\n\n'
+          'It was a dark and quiet evening.';
+
+      toWorkerPort.send(const LoadTextCommand(chapterText));
+
+      final state = await stateCompleter.future;
+      expect(state.totalSentences, equals(2));
+      expect(state.currentSentenceIndex, equals(0));
+      expect(
+        state.currentSentenceText,
+        equals('Chapter 1: The Diary (Part 1)'),
+      );
+    });
+
     test('zero-model safeguard: play without voice emits TtsErrorEvent', () async {
       toWorkerPort.send(const LoadTextCommand('Test sentence.'));
       await Future<void>.delayed(const Duration(milliseconds: 50));
