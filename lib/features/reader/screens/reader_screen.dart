@@ -262,6 +262,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           duration: Duration(seconds: 2),
         ),
       );
+      VoiceManagerScreen.show(context);
       return;
     }
 
@@ -486,7 +487,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       ? theme.accent
                       : theme.textPrimary),
             ),
-            onPressed: hasInstalledModels ? _toggleTts : null,
+            onPressed: _toggleTts,
           ),
 
           // Voice Manager / TTS Voices Settings

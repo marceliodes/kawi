@@ -29,7 +29,7 @@ class TtsControlBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = ReaderTheme.of(context);
     final ttsState = ref.watch(ttsStateProvider);
-    final ttsNotifier = ref.read(ttsStateProvider.notifier);
+    final ttsNotifier = ref.read(ttsNotifierProvider.notifier);
     final hasInstalledModels = ref.watch(hasInstalledTtsModelsProvider);
 
     final isPlaying = ttsState.isPlaying;
@@ -97,23 +97,35 @@ class TtsControlBar extends ConsumerWidget {
                       ? theme.textMuted.withValues(alpha: 0.4)
                       : theme.textPrimary,
                 ),
-                onPressed: !hasInstalledModels
-                    ? null
-                    : () {
-                        // ignore: avoid_print
-                        print('>>> [TTS UI] PLAY BUTTON PRESSED (isPlaying=$isPlaying, hasSentences=$hasSentences, onPlay=${onPlay != null}) <<<');
-                        if (isPlaying) {
-                          ttsNotifier.pause();
-                        } else {
-                          if (hasSentences) {
-                            ttsNotifier.play();
-                          } else if (onPlay != null) {
-                            onPlay!();
-                          } else {
-                            ttsNotifier.play();
-                          }
-                        }
-                      },
+                onPressed: () {
+                  // ignore: avoid_print
+                  print('>>> [ACTIVE UI BAR] Clicked play button on screen <<<');
+                  // ignore: avoid_print
+                  print('>>> [TTS UI] PLAY BUTTON PRESSED (isPlaying=$isPlaying, hasSentences=$hasSentences, onPlay=${onPlay != null}) <<<');
+                  if (!hasInstalledModels) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('No TTS engine downloaded.'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                    VoiceManagerScreen.show(context);
+                    return;
+                  }
+                  if (isPlaying) {
+                    ttsNotifier.pause();
+                  } else {
+                    if (ttsState.isPaused) {
+                      ttsNotifier.play();
+                    } else if (hasSentences && !ttsState.isStopped) {
+                      ttsNotifier.play();
+                    } else if (onPlay != null) {
+                      onPlay!();
+                    } else {
+                      ttsNotifier.play();
+                    }
+                  }
+                },
               ),
             ),
             const SizedBox(width: Spacing.xxs),

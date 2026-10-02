@@ -10,6 +10,22 @@ import 'package:path_provider/path_provider.dart';
 import '../models/tts_models.dart';
 import 'tts_isolate_worker.dart';
 
+class _PrebufferedAudio {
+  final int sentenceIndex;
+  final Uint8List wavBytes;
+  final int durationMs;
+  final List<SentenceWord> words;
+  final Future<String> filePathFuture;
+
+  _PrebufferedAudio({
+    required this.sentenceIndex,
+    required this.wavBytes,
+    required this.durationMs,
+    required this.words,
+    required this.filePathFuture,
+  });
+}
+
 /// Coordinator service managing the TTS isolate, voice configuration,
 /// playback state, word-boundary events, and main UI thread audio playback.
 ///
@@ -25,6 +41,10 @@ class AudioPlaybackService {
   StreamSubscription<Duration>? _playerPositionSubscription;
   bool _isAudioPlaying = false;
   List<SentenceWord> _currentSentenceWords = const [];
+  _PrebufferedAudio? _prebufferedAudio;
+
+  bool get hasPrebufferedAudio => _prebufferedAudio != null;
+  int? get prebufferedSentenceIndex => _prebufferedAudio?.sentenceIndex;
 
   AudioPlayer get audioPlayer => _audioPlayer;
 
@@ -106,6 +126,8 @@ class AudioPlaybackService {
           durationMs: message.durationMs,
           words: message.words,
         );
+      } else if (message is PrebufferedAudioBytesEvent) {
+        _handlePrebufferedAudio(message);
       } else if (message is StateUpdatedEvent) {
         stateNotifier.value = message.state;
       } else if (message is WordBoundaryEvent) {
@@ -123,6 +145,7 @@ class AudioPlaybackService {
         } catch (_) {}
       } else if (message is StopAudioEvent) {
         _isAudioPlaying = false;
+        _prebufferedAudio = null;
         try {
           _audioPlayer.stop();
         } catch (_) {}
@@ -144,6 +167,39 @@ class AudioPlaybackService {
     _isInitialized = true;
   }
 
+  Future<File> _getTempWavFile(int sentenceIndex) async {
+    Directory tempDir;
+    try {
+      tempDir = await getTemporaryDirectory();
+    } catch (_) {
+      tempDir = Directory.systemTemp;
+    }
+    return File('${tempDir.path}/kawi_tts_temp_${sentenceIndex % 2}.wav');
+  }
+
+  void _handlePrebufferedAudio(PrebufferedAudioBytesEvent message) {
+    // ignore: avoid_print
+    print('>>> [Kawi TTS] Received prebuffered audio for sentence index ${message.sentenceIndex} (${message.wavBytes.length} bytes) <<<');
+    final fileFuture = () async {
+      try {
+        final tempFile = await _getTempWavFile(message.sentenceIndex);
+        await tempFile.writeAsBytes(message.wavBytes, flush: true);
+        return tempFile.path;
+      } catch (e) {
+        debugPrint('[AudioPlaybackService] Error caching prebuffered audio: $e');
+        rethrow;
+      }
+    }();
+
+    _prebufferedAudio = _PrebufferedAudio(
+      sentenceIndex: message.sentenceIndex,
+      wavBytes: message.wavBytes,
+      durationMs: message.durationMs,
+      words: message.words,
+      filePathFuture: fileFuture,
+    );
+  }
+
   /// Plays synthesized WAV bytes on the main thread via AudioPlayer.
   Future<void> playWavBytes(
     Uint8List wavBytes, {
@@ -162,10 +218,15 @@ class AudioPlaybackService {
       return;
     }
 
+    if (_prebufferedAudio?.sentenceIndex == currentIndex) {
+      _prebufferedAudio = null;
+    }
+
     _currentSentenceWords = words;
     if (words.isNotEmpty) {
       final first = words.first;
       stateNotifier.value = currentState.copyWith(
+        currentSentenceIndex: currentIndex,
         currentWord: first.word,
         activeWordStart: first.start,
         activeWordEnd: first.end,
@@ -178,17 +239,15 @@ class AudioPlaybackService {
           end: first.end,
         ),
       );
+    } else {
+      stateNotifier.value = currentState.copyWith(
+        currentSentenceIndex: currentIndex,
+      );
     }
 
     _isAudioPlaying = true;
     try {
-      Directory tempDir;
-      try {
-        tempDir = await getTemporaryDirectory();
-      } catch (_) {
-        tempDir = Directory.systemTemp;
-      }
-      final tempFile = File('${tempDir.path}/kawi_tts_temp.wav');
+      final tempFile = await _getTempWavFile(currentIndex);
       await tempFile.writeAsBytes(wavBytes, flush: true);
       await _audioPlayer.play(DeviceFileSource(tempFile.path));
     } catch (e) {
@@ -232,10 +291,59 @@ class AudioPlaybackService {
     }
   }
 
-  void _onAudioPlaybackComplete() {
+  Future<void> _onAudioPlaybackComplete() async {
     if (!_isAudioPlaying) return;
-    _isAudioPlaying = false;
-    _sendCommand(const UtteranceCompletedCommand());
+
+    final nextIndex = currentState.currentSentenceIndex + 1;
+    if (_prebufferedAudio != null && _prebufferedAudio!.sentenceIndex == nextIndex) {
+      final pre = _prebufferedAudio!;
+      _prebufferedAudio = null;
+      // ignore: avoid_print
+      print('>>> [Kawi TTS] Instant zero-gap transition to pre-buffered sentence index $nextIndex <<<');
+
+      _isAudioPlaying = true;
+      _currentSentenceWords = pre.words;
+      if (pre.words.isNotEmpty) {
+        final first = pre.words.first;
+        stateNotifier.value = currentState.copyWith(
+          currentSentenceIndex: pre.sentenceIndex,
+          currentWord: first.word,
+          activeWordStart: first.start,
+          activeWordEnd: first.end,
+        );
+        _wordBoundaryController.add(
+          WordBoundaryEvent(
+            sentenceIndex: pre.sentenceIndex,
+            word: first.word,
+            start: first.start,
+            end: first.end,
+          ),
+        );
+      } else {
+        stateNotifier.value = currentState.copyWith(
+          currentSentenceIndex: pre.sentenceIndex,
+          currentWord: '',
+          activeWordStart: 0,
+          activeWordEnd: 0,
+        );
+      }
+
+      try {
+        final filePath = await pre.filePathFuture;
+        if (!_isAudioPlaying) return;
+        await _audioPlayer.play(DeviceFileSource(filePath));
+      } catch (e) {
+        debugPrint('[AudioPlaybackService] AudioPlayer.play prebuffered: $e');
+        _isAudioPlaying = false;
+        stop();
+        return;
+      }
+
+      _sendCommand(const UtteranceCompletedCommand(alreadyPlaying: true));
+    } else {
+      _isAudioPlaying = false;
+      _sendCommand(const UtteranceCompletedCommand());
+    }
   }
 
   /// Sets the active voice model and informs the isolate.
@@ -258,6 +366,7 @@ class AudioPlaybackService {
 
   /// Loads text into the worker queue.
   void loadText(String text, {int startSentenceIndex = 0}) {
+    _prebufferedAudio = null;
     // ignore: avoid_print
     print('[Kawi TTS] loadText called with ${text.length} chars (startSentenceIndex: $startSentenceIndex)');
     _sendCommand(
@@ -308,6 +417,7 @@ class AudioPlaybackService {
   void stop() {
     _isAudioPlaying = false;
     _currentSentenceWords = const [];
+    _prebufferedAudio = null;
     try {
       _audioPlayer.stop();
     } catch (_) {}
@@ -317,6 +427,7 @@ class AudioPlaybackService {
   /// Advances to the next sentence chunk.
   void nextSentence() {
     _isAudioPlaying = false;
+    _prebufferedAudio = null;
     try {
       _audioPlayer.stop();
     } catch (_) {}
@@ -326,6 +437,7 @@ class AudioPlaybackService {
   /// Rewinds to the previous sentence chunk.
   void previousSentence() {
     _isAudioPlaying = false;
+    _prebufferedAudio = null;
     try {
       _audioPlayer.stop();
     } catch (_) {}
@@ -335,6 +447,7 @@ class AudioPlaybackService {
   /// Seeks to a specific sentence chunk by index.
   void seekSentence(int sentenceIndex) {
     _isAudioPlaying = false;
+    _prebufferedAudio = null;
     try {
       _audioPlayer.stop();
     } catch (_) {}
@@ -343,17 +456,20 @@ class AudioPlaybackService {
 
   /// Adjusts speech rate (0.5 to 2.0).
   void setSpeechRate(double rate) {
+    _prebufferedAudio = null;
     _sendCommand(SetRateCommand(rate));
   }
 
   /// Adjusts pitch (0.5 to 2.0).
   void setPitch(double pitch) {
+    _prebufferedAudio = null;
     _sendCommand(SetPitchCommand(pitch));
   }
 
   /// Cleans up player resources and isolates.
   void dispose() {
     _isAudioPlaying = false;
+    _prebufferedAudio = null;
     _playerCompleteSubscription?.cancel();
     _playerCompleteSubscription = null;
     _playerPositionSubscription?.cancel();

@@ -16,8 +16,10 @@ set(APPLICATION_ID "com.kawi.kawi")
 # versions of CMake.
 cmake_policy(SET CMP0063 NEW)
 
-# Load bundled libraries from the lib/ directory relative to the binary.
-set(CMAKE_INSTALL_RPATH "$ORIGIN/lib")
+# Load bundled libraries from $ORIGIN and $ORIGIN/lib relative to the binary/shared library.
+set(CMAKE_INSTALL_RPATH "$ORIGIN:$ORIGIN/lib")
+set(CMAKE_BUILD_RPATH "$ORIGIN:$ORIGIN/lib")
+
 
 # Root filesystem for cross-building.
 if(FLUTTER_TARGET_PLATFORM_SYSROOT)
@@ -99,6 +101,10 @@ foreach(ffi_plugin ${FLUTTER_FFI_PLUGIN_LIST})
 endforeach()
 if(TARGET piper)
   add_dependencies(piper flutter_assemble)
+  set_target_properties(piper PROPERTIES
+    INSTALL_RPATH "$ORIGIN:$ORIGIN/lib"
+    BUILD_RPATH "$ORIGIN:$ORIGIN/lib"
+  )
 endif()
 
 
@@ -153,3 +159,16 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# Ensure share/ (containing espeak-ng-data) and lib/ (containing libonnxruntime and libpiper) are accessible across run directories
+install(CODE "
+  if(EXISTS \"${BUILD_BUNDLE_DIR}/share\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/share\" \"\${CMAKE_BINARY_DIR}/intermediates_do_not_run/share\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/share\" \"\${CMAKE_BINARY_DIR}/share\")
+  endif()
+  if(EXISTS \"${BUILD_BUNDLE_DIR}/lib\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/lib\" \"\${CMAKE_BINARY_DIR}/intermediates_do_not_run/lib\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/lib\" \"\${INSTALL_BUNDLE_DATA_DIR}/lib\")
+  endif()
+" COMPONENT Runtime)
+

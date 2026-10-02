@@ -253,5 +253,36 @@ void main() {
       expect(service.currentState.activeWordStart, equals(6));
       expect(service.currentState.activeWordEnd, equals(11));
     });
+
+    test('1-sentence lookahead pre-buffers next sentence and triggers zero-gap transition', () async {
+      const mockVoice = TtsVoiceModel(
+        id: 'test-mock-voice',
+        name: 'Mock Test Voice',
+        engineType: TtsEngineType.mock,
+        isInstalled: true,
+      );
+      service.setActiveVoice(mockVoice);
+      service.loadText('Sentence one is here. Sentence two is next.');
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      service.play();
+      // Wait for sentence 0 synthesis & playback to start, and sentence 1 pre-buffering to complete
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      expect(fakePlayer.isPlaying, isTrue);
+      expect(service.currentState.currentSentenceIndex, equals(0));
+      expect(fakePlayer.playedDeviceFileSource?.path, contains('kawi_tts_temp_0.wav'));
+      expect(service.hasPrebufferedAudio, isTrue);
+      expect(service.prebufferedSentenceIndex, equals(1));
+
+      // Trigger audio player completion on sentence 0
+      fakePlayer.triggerComplete();
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      // Immediate zero-gap transition to sentence 1
+      expect(fakePlayer.isPlaying, isTrue);
+      expect(service.currentState.currentSentenceIndex, equals(1));
+      expect(fakePlayer.playedDeviceFileSource?.path, contains('kawi_tts_temp_1.wav'));
+    });
   });
 }

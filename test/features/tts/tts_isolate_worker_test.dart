@@ -58,7 +58,7 @@ void main() {
       toWorkerPort.send(const LoadTextCommand(sampleText));
 
       final state = await stateCompleter.future;
-      expect(state.totalSentences, equals(6));
+      expect(state.totalSentences, equals(4));
       expect(state.currentSentenceIndex, equals(0));
       expect(state.currentSentenceText, equals('Hello world!'));
       expect(state.playbackState, equals(TtsPlaybackState.stopped));

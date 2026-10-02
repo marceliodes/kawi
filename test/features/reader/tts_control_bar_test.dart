@@ -215,5 +215,38 @@ void main() {
       await tester.pump();
       expect(onPlayCalled, isTrue);
     });
+
+    testWidgets('calls play on notifier when Play tapped while paused with sentences', (tester) async {
+      final mockNotifier = MockTtsNotifier(
+        const TtsState(
+          playbackState: TtsPlaybackState.paused,
+          currentSentenceIndex: 1,
+          totalSentences: 5,
+        ),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            ttsStateProvider.overrideWith(() => mockNotifier),
+            hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ],
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: TtsControlBar(
+                  onClose: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Play'));
+      await tester.pump();
+      expect(mockNotifier.playCalled, isTrue);
+    });
   });
 }

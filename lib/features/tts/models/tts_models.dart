@@ -259,7 +259,8 @@ class SetPitchCommand extends TtsCommand {
 }
 
 class UtteranceCompletedCommand extends TtsCommand {
-  const UtteranceCompletedCommand();
+  const UtteranceCompletedCommand({this.alreadyPlaying = false});
+  final bool alreadyPlaying;
 }
 
 class UtteranceProgressCommand extends TtsCommand {
@@ -342,6 +343,20 @@ class AudioBufferEvent extends TtsEvent {
 
 class PlayAudioBytesEvent extends TtsEvent {
   const PlayAudioBytesEvent({
+    required this.sentenceIndex,
+    required this.wavBytes,
+    this.durationMs = 0,
+    this.words = const [],
+  });
+
+  final int sentenceIndex;
+  final Uint8List wavBytes;
+  final int durationMs;
+  final List<SentenceWord> words;
+}
+
+class PrebufferedAudioBytesEvent extends TtsEvent {
+  const PrebufferedAudioBytesEvent({
     required this.sentenceIndex,
     required this.wavBytes,
     this.durationMs = 0,

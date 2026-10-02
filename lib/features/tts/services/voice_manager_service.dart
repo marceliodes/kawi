@@ -153,12 +153,18 @@ class VoiceManagerService {
       );
     }
 
-    // Check Piper models on disk
+    // Check Piper models on disk (must have BOTH .onnx and .onnx.json config)
     final piperDir = await _getPiperDirectoryPath();
     for (final pv in _catalogPiperVoices) {
       final modelFile = File(p.join(piperDir, '${pv.id}.onnx'));
-      final isInstalled = modelFile.existsSync() && modelFile.lengthSync() > 0;
-      final actualSize = isInstalled ? modelFile.lengthSync() : pv.sizeBytes;
+      final configFile = File(p.join(piperDir, '${pv.id}.onnx.json'));
+      final isInstalled = modelFile.existsSync() &&
+          modelFile.lengthSync() > 0 &&
+          configFile.existsSync() &&
+          configFile.lengthSync() > 0;
+      final actualSize = isInstalled
+          ? (modelFile.lengthSync() + configFile.lengthSync())
+          : pv.sizeBytes;
 
       list.add(
         pv.copyWith(
@@ -187,7 +193,7 @@ class VoiceManagerService {
     onProgress?.call(1.0, 'Kokoro engine ready');
   }
 
-  /// Downloads a Piper ONNX model with progress tracking.
+  /// Downloads a Piper ONNX model and its required JSON config with progress tracking.
   Future<void> downloadPiperModel(
     TtsVoiceModel model, {
     void Function(double progress, String status)? onProgress,
@@ -219,7 +225,7 @@ class VoiceManagerService {
         sink.add(chunk);
         receivedBytes += chunk.length;
         if (totalBytes > 0) {
-          final progress = (receivedBytes / totalBytes).clamp(0.05, 0.95);
+          final progress = (receivedBytes / totalBytes).clamp(0.05, 0.90);
           onProgress?.call(
             progress,
             'Downloading ${(receivedBytes / (1024 * 1024)).toStringAsFixed(1)} MB...',
@@ -229,20 +235,30 @@ class VoiceManagerService {
       await sink.flush();
       await sink.close();
 
-      // Download the json config if available
+      // Download the required json config file into the same folder
       final configUrl = '${model.downloadUrl!}.json';
-      try {
-        final configResp = await http.get(Uri.parse(configUrl));
-        if (configResp.statusCode == 200) {
-          final configFile = File(p.join(piperDir, '${model.id}.onnx.json'));
-          await configFile.writeAsBytes(configResp.bodyBytes);
-        }
-      } catch (_) {
-        // Optional config
+      onProgress?.call(0.92, 'Downloading phoneme config (.json)...');
+      final configFile = File(p.join(piperDir, '${model.id}.onnx.json'));
+      final configResp = await http.get(Uri.parse(configUrl));
+      if (configResp.statusCode == 200 && configResp.bodyBytes.isNotEmpty) {
+        await configFile.writeAsBytes(configResp.bodyBytes, flush: true);
+        // ignore: avoid_print
+        print('>>> [VOICE MANAGER] Saved Piper config: ${configFile.path} (${configResp.bodyBytes.length} bytes) <<<');
+      } else {
+        throw StateError('Failed to download Piper phoneme config (.json): HTTP ${configResp.statusCode}');
       }
 
       if (targetFile.existsSync()) targetFile.deleteSync();
       partFile.renameSync(targetFile.path);
+
+      // Verify BOTH files exist and are non-empty
+      if (!targetFile.existsSync() || targetFile.lengthSync() == 0 ||
+          !configFile.existsSync() || configFile.lengthSync() == 0) {
+        throw StateError('Piper voice files validation failed after download.');
+      }
+
+      // ignore: avoid_print
+      print('>>> [VOICE MANAGER] Piper model & config successfully verified: ${targetFile.path} (${targetFile.lengthSync()} bytes), ${configFile.path} (${configFile.lengthSync()} bytes) <<<');
 
       onProgress?.call(1.0, 'Download complete');
     } catch (e) {

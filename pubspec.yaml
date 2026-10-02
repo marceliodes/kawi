@@ -44,6 +44,7 @@ dependency_overrides:
   path_provider_foundation: 2.5.1
   windows_file_picker:
     path: plugins/windows_file_picker
+  win32: 5.12.0
 
 flutter:
   uses-material-design: true

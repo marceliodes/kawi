@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../models/tts_models.dart';
 import 'tts_engine_bridge.dart';
+import 'tts_text_normalizer.dart';
 
 /// Worker class running completely inside a dedicated background isolate.
 ///
@@ -20,6 +21,11 @@ class TtsIsolateWorker {
   List<SentenceChunk> _sentences = const [];
   int _currentIndex = 0;
   TtsState _state = const TtsState();
+
+  int? _prebufferingIndex;
+  int _prebufferGeneration = 0;
+  ({int index, Uint8List wavBytes, int durationMs, List<SentenceWord> words})?
+      _prebufferedSentence;
 
   /// Entry point called by [Isolate.spawn].
   static void entryPoint(SendPort mainSendPort) {
@@ -79,20 +85,35 @@ class TtsIsolateWorker {
         _seekSentence(sentenceIndex);
 
       case SetRateCommand(:final rate):
+        _prebufferGeneration++;
+        _prebufferingIndex = null;
+        _prebufferedSentence = null;
         _state = _state.copyWith(speechRate: rate);
         _emitState();
+        if (_state.isPlaying) {
+          _triggerPrebuffer();
+        }
 
       case SetPitchCommand(:final pitch):
+        _prebufferGeneration++;
+        _prebufferingIndex = null;
+        _prebufferedSentence = null;
         _state = _state.copyWith(pitch: pitch);
         _emitState();
+        if (_state.isPlaying) {
+          _triggerPrebuffer();
+        }
 
-      case UtteranceCompletedCommand():
-        _onUtteranceCompleted();
+      case UtteranceCompletedCommand(:final alreadyPlaying):
+        _onUtteranceCompleted(alreadyPlaying: alreadyPlaying);
 
       case UtteranceProgressCommand(:final word, :final start, :final end):
         _onUtteranceProgress(start, end, word);
 
       case DisposeCommand():
+        _prebufferGeneration++;
+        _prebufferingIndex = null;
+        _prebufferedSentence = null;
         _engineBridge?.dispose();
         _fromMainPort.close();
     }
@@ -138,6 +159,9 @@ class TtsIsolateWorker {
   }
 
   void _loadText(String rawText, int startIndex) {
+    _prebufferGeneration++;
+    _prebufferingIndex = null;
+    _prebufferedSentence = null;
     _sentences = _splitIntoSentences(rawText);
     _currentIndex = _sentences.isEmpty
         ? 0
@@ -194,6 +218,24 @@ class TtsIsolateWorker {
       ),
     );
 
+    // If this sentence was already pre-buffered, dispatch it immediately!
+    if (_prebufferedSentence != null && _prebufferedSentence!.index == _currentIndex) {
+      final pre = _prebufferedSentence!;
+      _prebufferedSentence = null;
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] Sentence index $_currentIndex was pre-buffered! Dispatching immediately. <<<');
+      _toMainPort.send(
+        PlayAudioBytesEvent(
+          sentenceIndex: _currentIndex,
+          wavBytes: pre.wavBytes,
+          durationMs: pre.durationMs,
+          words: pre.words,
+        ),
+      );
+      _triggerPrebuffer();
+      return;
+    }
+
     // If an engine bridge is present, speak through it
     if (_engineBridge != null) {
       try {
@@ -202,7 +244,7 @@ class TtsIsolateWorker {
           rate: _state.speechRate,
           pitch: _state.pitch,
           onWordBoundary: _onUtteranceProgress,
-          onDone: _onUtteranceCompleted,
+          onDone: () {},
           onAudioBuffer: (samples, sampleRate) {
             _toMainPort.send(
               AudioBufferEvent(
@@ -223,6 +265,9 @@ class TtsIsolateWorker {
                 words: words,
               ),
             );
+            // While sentence _currentIndex is now playing on the main thread,
+            // immediately trigger background synthesis for sentence _currentIndex + 1!
+            _triggerPrebuffer();
           },
         );
       } catch (e, st) {
@@ -238,6 +283,77 @@ class TtsIsolateWorker {
     }
   }
 
+  void _triggerPrebuffer() {
+    if (!_state.isPlaying) return;
+    final nextIndex = _currentIndex + 1;
+    if (nextIndex >= _sentences.length) return;
+    if (_prebufferingIndex == nextIndex) return;
+    if (_prebufferedSentence?.index == nextIndex) return;
+    if (_engineBridge == null) return;
+
+    _prebufferingIndex = nextIndex;
+    final currentGen = ++_prebufferGeneration;
+    final nextSentence = _sentences[nextIndex];
+
+    // ignore: avoid_print
+    print('>>> [TTS ISOLATE] Lookahead: Pre-buffering sentence [${nextIndex + 1}/${_sentences.length}]: "${nextSentence.text}" <<<');
+
+    _engineBridge!.speak(
+      nextSentence.text,
+      rate: _state.speechRate,
+      pitch: _state.pitch,
+      onWordBoundary: (_, _, _) {},
+      onDone: () {},
+      onAudioBytes: (wavBytes, durationMs, [words = const []]) {
+        if (_prebufferGeneration != currentGen) {
+          return;
+        }
+        _prebufferingIndex = null;
+        _prebufferedSentence = (
+          index: nextIndex,
+          wavBytes: wavBytes,
+          durationMs: durationMs,
+          words: words,
+        );
+
+        // ignore: avoid_print
+        print('>>> [TTS ISOLATE] Lookahead: Pre-buffering COMPLETE for sentence [${nextIndex + 1}/${_sentences.length}] (${wavBytes.length} bytes, ${durationMs}ms) <<<');
+
+        if (_currentIndex == nextIndex) {
+          _prebufferedSentence = null;
+          // ignore: avoid_print
+          print('>>> [TTS ISOLATE] In-flight prebuffer caught up with current sentence $nextIndex, dispatching PlayAudioBytesEvent <<<');
+          _toMainPort.send(
+            PlayAudioBytesEvent(
+              sentenceIndex: nextIndex,
+              wavBytes: wavBytes,
+              durationMs: durationMs,
+              words: words,
+            ),
+          );
+          _triggerPrebuffer();
+        } else {
+          _toMainPort.send(
+            PrebufferedAudioBytesEvent(
+              sentenceIndex: nextIndex,
+              wavBytes: wavBytes,
+              durationMs: durationMs,
+              words: words,
+            ),
+          );
+        }
+      },
+    ).catchError((e, st) {
+      if (_prebufferGeneration == currentGen) {
+        _prebufferingIndex = null;
+        // ignore: avoid_print
+        print('>>> [TTS ISOLATE] Lookahead pre-buffering error: $e <<<');
+        // ignore: avoid_print
+        print('>>> [TTS ISOLATE] Stack trace:\n$st <<<');
+      }
+    });
+  }
+
   void _pause() {
     _engineBridge?.pause();
     _state = _state.copyWith(playbackState: TtsPlaybackState.paused);
@@ -246,6 +362,9 @@ class TtsIsolateWorker {
   }
 
   void _stop() {
+    _prebufferGeneration++;
+    _prebufferingIndex = null;
+    _prebufferedSentence = null;
     _engineBridge?.stop();
     _state = _state.copyWith(
       playbackState: TtsPlaybackState.stopped,
@@ -280,6 +399,9 @@ class TtsIsolateWorker {
   void _seekSentence(int index) {
     if (_sentences.isEmpty) return;
 
+    _prebufferGeneration++;
+    _prebufferingIndex = null;
+    _prebufferedSentence = null;
     _engineBridge?.stop();
     final wasPlaying = _state.isPlaying;
     _currentIndex = index.clamp(0, _sentences.length - 1);
@@ -299,14 +421,58 @@ class TtsIsolateWorker {
     }
   }
 
-  void _onUtteranceCompleted() {
+  void _onUtteranceCompleted({bool alreadyPlaying = false}) {
     if (_sentences.isEmpty) return;
 
     if (_currentIndex < _sentences.length - 1) {
       _currentIndex++;
       // ignore: avoid_print
-      print('[TTS Worker] Utterance completed. Advancing to sentence [${_currentIndex + 1}/${_sentences.length}]');
-      _play();
+      print('[TTS Worker] Utterance completed. Advancing to sentence [${_currentIndex + 1}/${_sentences.length}] (alreadyPlaying: $alreadyPlaying)');
+
+      _state = _state.copyWith(
+        playbackState: TtsPlaybackState.playing,
+        currentSentenceIndex: _currentIndex,
+        totalSentences: _sentences.length,
+        currentSentenceText: _sentences[_currentIndex].text,
+        currentWord: '',
+        activeWordStart: 0,
+        activeWordEnd: 0,
+      );
+      _emitState();
+
+      _toMainPort.send(
+        SpeakChunkEvent(
+          sentenceIndex: _currentIndex,
+          text: _sentences[_currentIndex].text,
+        ),
+      );
+
+      if (alreadyPlaying) {
+        // Main thread is already playing the pre-buffered audio!
+        _prebufferedSentence = null;
+        _triggerPrebuffer();
+      } else {
+        if (_prebufferedSentence != null && _prebufferedSentence!.index == _currentIndex) {
+          final pre = _prebufferedSentence!;
+          _prebufferedSentence = null;
+          // ignore: avoid_print
+          print('>>> [TTS ISOLATE] Using pre-buffered audio for sentence index $_currentIndex <<<');
+          _toMainPort.send(
+            PlayAudioBytesEvent(
+              sentenceIndex: _currentIndex,
+              wavBytes: pre.wavBytes,
+              durationMs: pre.durationMs,
+              words: pre.words,
+            ),
+          );
+          _triggerPrebuffer();
+        } else if (_prebufferingIndex == _currentIndex) {
+          // ignore: avoid_print
+          print('>>> [TTS ISOLATE] Pre-buffering in flight for active sentence $_currentIndex, will dispatch on finish <<<');
+        } else {
+          _play();
+        }
+      }
     } else {
       // ignore: avoid_print
       print('[TTS Worker] Utterance completed. All ${_sentences.length} sentences finished.');
@@ -342,36 +508,8 @@ class TtsIsolateWorker {
     _toMainPort.send(StateUpdatedEvent(_state));
   }
 
-  /// Sentence-splitting logic using boundary punctuation (. ! ? \n).
+  /// Sentence-splitting logic using literary typography and boundary rules.
   static List<SentenceChunk> _splitIntoSentences(String text) {
-    if (text.trim().isEmpty) return const [];
-
-    final sentences = <SentenceChunk>[];
-    final regex = RegExp(r'[^.!?\n]+[.!?\n]+|[^.!?\n]+$');
-    final matches = regex.allMatches(text);
-
-    var index = 0;
-    for (final match in matches) {
-      final chunkText = match.group(0)?.trim() ?? '';
-      if (chunkText.isEmpty) continue;
-
-      final words = chunkText
-          .split(RegExp(r'\s+'))
-          .where((w) => w.isNotEmpty)
-          .toList();
-
-      sentences.add(
-        SentenceChunk(
-          index: index,
-          text: chunkText,
-          charStart: match.start,
-          charEnd: match.end,
-          words: words,
-        ),
-      );
-      index++;
-    }
-
-    return sentences;
+    return TtsTextNormalizer.splitIntoSentences(text);
   }
 }
