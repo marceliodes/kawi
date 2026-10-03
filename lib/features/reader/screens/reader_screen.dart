@@ -294,9 +294,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             pageIndex: idx,
           )).future,
         );
-        final raw = pageContent.plainText.trim();
+        var raw = pageContent.plainText.trim();
         if (raw.isNotEmpty) {
-          pageTexts.add(raw);
+          raw = TtsTextNormalizer.normalizeParagraphWhitespace(raw);
+          if (raw.isNotEmpty) {
+            pageTexts.add(raw);
+          }
         }
       }
 
@@ -305,9 +308,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       var nextIdx = targetEnd;
       while (nextIdx < totalPageCount) {
         var currentCombined = pageTexts.join('\n\n');
-        currentCombined = currentCombined.replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '');
-        currentCombined = currentCombined.replaceAll(RegExp(r'<[^>]*>'), '');
-        currentCombined = currentCombined.replaceAll(RegExp(r'\[\s*\]'), '');
+        currentCombined = TtsTextNormalizer.filterPlaceholdersAndTags(currentCombined);
         if (currentCombined.trim().length >= 1500) break;
 
         final nextContent = await ref.read(
@@ -316,9 +317,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             pageIndex: nextIdx,
           )).future,
         );
-        final raw = nextContent.plainText.trim();
+        var raw = nextContent.plainText.trim();
         if (raw.isNotEmpty) {
-          pageTexts.add(raw);
+          raw = TtsTextNormalizer.normalizeParagraphWhitespace(raw);
+          if (raw.isNotEmpty) {
+            pageTexts.add(raw);
+          }
         }
         nextIdx++;
       }
@@ -326,37 +330,39 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       var textToRead = pageTexts.join('\n\n');
 
       // 4. Filter out [image] placeholders and non-text tokens
-      textToRead = textToRead.replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '');
-      textToRead = textToRead.replaceAll(RegExp(r'<[^>]*>'), '');
-      textToRead = textToRead.replaceAll(RegExp(r'\[\s*\]'), '');
+      textToRead = TtsTextNormalizer.filterPlaceholdersAndTags(textToRead);
 
       // Normalize line breaks into paragraph structure
       textToRead = TtsTextNormalizer.normalizeParagraphWhitespace(textToRead);
 
       if (fromSentence != null && fromSentence.trim().isNotEmpty) {
         final needle = fromSentence.replaceAll(RegExp(r'\s+'), ' ').trim();
-        final normalizedForSearch = textToRead.replaceAll(RegExp(r'\s+'), ' ');
-        final idx = normalizedForSearch.indexOf(needle);
-        if (idx != -1) {
-          textToRead = textToRead.substring(idx.clamp(0, textToRead.length));
-        } else {
-          // If needle was not found in visible text, search subsequent pages
-          for (var i = nextIdx; i < totalPageCount; i++) {
-            final content = await ref.read(
-              documentPageContentProvider((
-                filePath: widget.document.filePath,
-                pageIndex: i,
-              )).future,
-            );
-            var pText = content.plainText;
-            pText = pText.replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '');
-            pText = pText.replaceAll(RegExp(r'<[^>]*>'), '');
-            pText = pText.replaceAll(RegExp(r'\[\s*\]'), '');
-            pText = TtsTextNormalizer.normalizeParagraphWhitespace(pText);
-            final pIdx = pText.indexOf(needle);
-            if (pIdx != -1) {
-              textToRead = pText.substring(pIdx);
-              break;
+        final words = needle.split(' ').where((w) => w.isNotEmpty).toList();
+        if (words.isNotEmpty) {
+          final needlePattern = RegExp(
+            words.map(RegExp.escape).join(r'\s+'),
+            caseSensitive: false,
+          );
+          final match = needlePattern.firstMatch(textToRead);
+          if (match != null) {
+            textToRead = textToRead.substring(match.start);
+          } else {
+            // If needle was not found in visible text, search subsequent pages
+            for (var i = nextIdx; i < totalPageCount; i++) {
+              final content = await ref.read(
+                documentPageContentProvider((
+                  filePath: widget.document.filePath,
+                  pageIndex: i,
+                )).future,
+              );
+              var pText = content.plainText;
+              pText = TtsTextNormalizer.filterPlaceholdersAndTags(pText);
+              pText = TtsTextNormalizer.normalizeParagraphWhitespace(pText);
+              final pMatch = needlePattern.firstMatch(pText);
+              if (pMatch != null) {
+                textToRead = pText.substring(pMatch.start);
+                break;
+              }
             }
           }
         }

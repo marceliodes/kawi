@@ -245,4 +245,78 @@ void main() {
       expect(result, equals('Hello world!'));
     });
   });
+
+  group('Sentence Splitting Rules - User Requirements (Line Wraps, Quotes, Non-Alphanumeric)', () {
+    test('Rule 1: Do NOT split on single newlines within paragraphs', () {
+      const input =
+          'My future self had given me a few pieces of advice: “Consult\n'
+          'Nanahoshi,” “Write Eris a letter,” and “Doubt the Man-God without\n'
+          'opposing him.”';
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(1));
+      expect(
+        chunks[0].text,
+        equals(
+          'My future self had given me a few pieces of advice: “Consult '
+          'Nanahoshi,” “Write Eris a letter,” and “Doubt the Man-God without '
+          'opposing him.”',
+        ),
+      );
+    });
+
+    test('Rule 2: Do NOT split on quotation marks or dialogue commas', () {
+      const input =
+          '“Consult Nanahoshi,” “Write Eris a letter,” and “Doubt the Man-God without opposing him.”';
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(1));
+      expect(chunks[0].text, equals(input));
+    });
+
+    test('Rule 3: Only split on terminal punctuation (. ! ?) followed by whitespace or true paragraph breaks', () {
+      const input =
+          'First sentence. Second sentence! Third sentence? Fourth sentence.\n\n'
+          'New paragraph sentence.';
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(5));
+      expect(chunks[0].text, equals('First sentence.'));
+      expect(chunks[1].text, equals('Second sentence!'));
+      expect(chunks[2].text, equals('Third sentence?'));
+      expect(chunks[3].text, equals('Fourth sentence.'));
+      expect(chunks[4].text, equals('New paragraph sentence.'));
+    });
+
+    test('Rule 4: Discard any resulting token that has no alphanumeric characters (orphan quotes, solo punctuation)', () {
+      const input =
+          'Sentence one.\n\n'
+          '”\n\n'
+          '* * *\n\n'
+          'Sentence two.';
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(2));
+      expect(chunks[0].text, equals('Sentence one.'));
+      expect(chunks[1].text, equals('Sentence two.'));
+      expect(chunks[0].index, equals(0));
+      expect(chunks[1].index, equals(1));
+    });
+
+    test('Exact user scenario: line wraps, dialogue quotes, and wrapped closing quote', () {
+      const input =
+          'My future self had given me a few pieces of advice: “Consult\n'
+          'Nanahoshi,” “Write Eris a letter,” and “Doubt the Man-God without\n'
+          'opposing him.\n'
+          '”\n\n'
+          'Next paragraph starts here.';
+      final chunks = TtsTextNormalizer.splitIntoSentences(input);
+      expect(chunks.length, equals(2));
+      expect(
+        chunks[0].text,
+        equals(
+          'My future self had given me a few pieces of advice: “Consult '
+          'Nanahoshi,” “Write Eris a letter,” and “Doubt the Man-God without '
+          'opposing him.”',
+        ),
+      );
+      expect(chunks[1].text, equals('Next paragraph starts here.'));
+    });
+  });
 }

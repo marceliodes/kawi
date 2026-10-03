@@ -86,13 +86,36 @@ class TtsTextNormalizer {
     // 1. Convert all line break styles to standard \n
     result = result.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
 
-    // 2. Standardize multiple newlines (paragraph boundaries) with optional horizontal spaces
-    result = result.replaceAll(RegExp(r'[ \t]*\n(?:[ \t]*\n)+[ \t]*'), '\n\n');
+    // 2. Normalize unicode horizontal spaces (\u00A0, \u2000-\u200A, \u3000, tabs) to regular space
+    result = result.replaceAll(
+      RegExp(r'[\t\f\v\u00A0\u1680\u2000-\u200a\u202f\u205f\u3000]'),
+      ' ',
+    );
 
-    // 3. Replace isolated single newlines (surrounded by text / horizontal spaces) with a single space
-    result = result.replaceAll(RegExp(r'[ \t]*(?<!\n)\n(?!\n)[ \t]*'), ' ');
+    // 3. Un-wrap lines where a line break is followed by a lowercase letter (continuation of sentence/clause)
+    result = result.replaceAll(RegExp(r'\n+(?=[a-z])'), ' ');
 
-    // 4. Collapse multiple horizontal spaces/tabs within a paragraph into a single space
+    // 4. Attach closing quotes/brackets wrapped onto a new line back to preceding terminal punctuation
+    // (only across single line-wrap, not across true paragraph breaks \n\n)
+    result = result.replaceAllMapped(
+      RegExp(r"""([.!?…])[ \t]*(?:\n(?!\n)[ \t]*|[ \t]+)(["'”’»\)\]]+)"""),
+      (m) => '${m[1]}${m[2]}',
+    );
+
+    // 5. Preserve paragraph breaks (\n\n+) by protecting them
+    const paragraphBreakPlaceholder = '\uE000';
+    result = result.replaceAll(
+      RegExp(r'[ \t]*\n(?:[ \t]*\n)+[ \t]*'),
+      paragraphBreakPlaceholder,
+    );
+
+    // 6. Replace any soft/single newline (not part of a double newline \n\n) with a single space:
+    result = result.replaceAll(RegExp(r'(?<!\n)\s*\r?\n\s*(?!\n)'), ' ');
+
+    // 7. Restore paragraph breaks
+    result = result.replaceAll(paragraphBreakPlaceholder, '\n\n');
+
+    // 8. Collapse consecutive spaces/tabs into a single space:
     result = result.replaceAll(RegExp(r'[ \t]+'), ' ');
 
     return result.trim();
@@ -172,86 +195,47 @@ class TtsTextNormalizer {
   /// Splits [text] into sentences according to literary typography rules:
   /// 1. Normalizes paragraph whitespace (single newlines become spaces).
   /// 2. Treats double newlines (\n\n) or terminal punctuation followed by whitespace
-  ///    ([.!?]["'”’]?\s+) as boundaries.
+  ///    as boundaries.
   /// 3. Preserves dialog quotes (e.g. “Consult Nanahoshi,”) so they don't prematurely
   ///    split on internal quotation punctuation or dialog tags.
-  /// 4. Normalizes all-caps chapter openers and words in each sentence chunk.
+  /// 4. Discards any resulting token that has no alphanumeric characters.
+  /// 5. Normalizes all-caps chapter openers and words in each sentence chunk.
   static List<SentenceChunk> splitIntoSentences(String text) {
     final normalized = normalizeParagraphWhitespace(text);
     if (normalized.trim().isEmpty) return const [];
 
-    final sentences = <SentenceChunk>[];
-
-    // Boundary regex:
-    // - Negative lookbehind for common honorifics and abbreviations (Mr., Mrs., Dr., etc.)
-    // - Terminal punctuation (. ! ? or …) followed by optional closing quotes/brackets,
-    //   followed by whitespace (\s+ which includes \n\n), not followed by a lowercase letter
-    //   (preserving dialogue tags like: “Wait!” he said.)
-    // - OR double newlines (\n\n+), which demarcate paragraph boundaries even without punctuation.
-    final boundaryRegex = RegExp(
-      r'(?:'
-      r'(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e))'
-      r'''([.!?]+["'”’»\)]*)(?:\s+(?![a-z])|(?=["'“]))'''
-      r'|'
-      r'\n\n+'
-      r')',
+    final sentenceRegex = RegExp(
+      r'''(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e)\.["'”’]?)(?<=[.!?]["'”’]?)\s+(?=[A-Z0-9“"‘'])|(?:\r?\n){2,}''',
     );
 
-    var currentStart = 0;
+    final rawSentences = normalized
+        .split(sentenceRegex)
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty && RegExp(r'[a-zA-Z0-9]').hasMatch(s))
+        .toList();
 
-    void addSentenceIfValid(String slice, int chunkStart) {
-      final rawSentence = filterPlaceholdersAndTags(slice).trim();
-      if (rawSentence.isNotEmpty && hasAlphanumeric(rawSentence)) {
-        final processedText = normalizeAllCaps(rawSentence).trim();
-        var cleanSentence = filterPlaceholdersAndTags(processedText);
-        cleanSentence = cleanSentence.replaceAll(RegExp(r'\s+'), ' ').trim();
-        if (cleanSentence.isNotEmpty && hasAlphanumeric(cleanSentence)) {
-          final words = cleanSentence
-              .split(RegExp(r'\s+'))
-              .where((w) => w.isNotEmpty && hasAlphanumeric(w))
-              .toList();
+    final sentences = <SentenceChunk>[];
+    for (var i = 0; i < rawSentences.length; i++) {
+      final rawSentence = rawSentences[i];
+      final processedText = normalizeAllCaps(rawSentence).trim();
+      var cleanSentence = filterPlaceholdersAndTags(processedText);
+      cleanSentence = cleanSentence.replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (cleanSentence.isNotEmpty && hasAlphanumeric(cleanSentence)) {
+        final words = cleanSentence
+            .split(RegExp(r'\s+'))
+            .where((w) => w.isNotEmpty && hasAlphanumeric(w))
+            .toList();
 
-          if (words.isNotEmpty) {
-            final leadingSpaces = slice.indexOf(rawSentence);
-            final actualStart =
-                chunkStart + (leadingSpaces >= 0 ? leadingSpaces : 0);
-            final actualEnd = actualStart + rawSentence.length;
-
-            sentences.add(
-              SentenceChunk(
-                index: sentences.length,
-                text: cleanSentence,
-                charStart: actualStart,
-                charEnd: actualEnd,
-                words: words,
-              ),
-            );
-          }
-        }
+        sentences.add(
+          SentenceChunk(
+            index: sentences.length,
+            text: cleanSentence,
+            charStart: 0,
+            charEnd: cleanSentence.length,
+            words: words,
+          ),
+        );
       }
-    }
-
-    for (final match in boundaryRegex.allMatches(normalized)) {
-      final punctGroup = match.group(1);
-      final int sentenceEnd;
-      if (punctGroup != null) {
-        sentenceEnd = match.start + punctGroup.length;
-      } else {
-        sentenceEnd = match.start;
-      }
-
-      final chunkStart = currentStart;
-      final chunkEnd = sentenceEnd;
-      currentStart = match.end;
-
-      final slice = normalized.substring(chunkStart, chunkEnd);
-      addSentenceIfValid(slice, chunkStart);
-    }
-
-    // Remainder after the last matched boundary
-    if (currentStart < normalized.length) {
-      final slice = normalized.substring(currentStart);
-      addSentenceIfValid(slice, currentStart);
     }
 
     return sentences;

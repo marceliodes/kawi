@@ -163,32 +163,61 @@ class TtsIsolateWorker {
     _prebufferGeneration++;
     _prebufferingIndex = null;
     _prebufferedSentence = null;
-    final cleanText = TtsTextNormalizer.normalizeParagraphWhitespace(rawText);
-    final rawSentences = _splitIntoSentences(cleanText);
 
-    // Remove any empty or whitespace-only sentences or sentences containing no alphanumeric characters
-    // so TTS never attempts to speak them, and Sentence 1 begins directly with actual text.
-    final cleanSentences = <SentenceChunk>[];
-    for (final s in rawSentences) {
-      var filteredText =
-          TtsTextNormalizer.filterPlaceholdersAndTags(s.text);
-      filteredText = filteredText.replaceAll(RegExp(r'\s+'), ' ').trim();
-      if (filteredText.isNotEmpty && TtsTextNormalizer.hasAlphanumeric(filteredText)) {
-        cleanSentences.add(
-          SentenceChunk(
-            index: cleanSentences.length,
-            text: filteredText,
-            charStart: s.charStart,
-            charEnd: s.charEnd,
-            words: s.words
-                .map((w) => w.trim())
-                .where((w) => w.isNotEmpty && TtsTextNormalizer.hasAlphanumeric(w))
-                .toList(),
-          ),
-        );
-      }
-    }
-    _sentences = cleanSentences;
+    // 1. Pre-process and sanitize rawText before splitting:
+    // Strip image tokens
+    var cleanText = rawText.replaceAll(
+      RegExp(r'\[image[^\]]*\]', caseSensitive: false),
+      '',
+    );
+    cleanText = cleanText.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+    // Protect double newlines (\n\n+) so soft newline replacement preserves paragraph breaks
+    const paragraphBreakPlaceholder = '\uE000';
+    cleanText = cleanText.replaceAll(
+      RegExp(r'[ \t]*\n(?:[ \t]*\n)+[ \t]*'),
+      paragraphBreakPlaceholder,
+    );
+
+    // Reattach closing quotes/brackets wrapped onto a new line to preceding terminal punctuation
+    cleanText = cleanText.replaceAllMapped(
+      RegExp(r"""([.!?…])[ \t]*(?:\n(?!\n)[ \t]*|[ \t]+)(["'”’»\)\]]+)"""),
+      (m) => '${m[1]}${m[2]}',
+    );
+
+    // Collapse soft line wraps into spaces (isolated newlines)
+    cleanText = cleanText.replaceAll(RegExp(r'(?<!\n)\s*\r?\n\s*(?!\n)'), ' ');
+
+    // Restore double newlines (\n\n) marking paragraph breaks
+    cleanText = cleanText.replaceAll(paragraphBreakPlaceholder, '\n\n');
+
+    // Normalize multiple consecutive spaces/tabs to a single space and trim
+    cleanText = cleanText.replaceAll(RegExp(r'[ \t]+'), ' ').trim();
+
+    // 2. Split into true sentences:
+    final sentenceRegex = RegExp(
+      r'''(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e)\.["'”’]?)(?<=[.!?]["'”’]?)\s+(?=[A-Z0-9“"‘'])|(?:\r?\n){2,}''',
+    );
+    final rawSentences = cleanText
+        .split(sentenceRegex)
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty && RegExp(r'[a-zA-Z0-9]').hasMatch(s))
+        .toList();
+
+    // 3. Populate _sentences:
+    _sentences = [
+      for (var i = 0; i < rawSentences.length; i++)
+        SentenceChunk(
+          index: i,
+          text: TtsTextNormalizer.normalizeAllCaps(rawSentences[i]),
+          charStart: 0,
+          charEnd: rawSentences[i].length,
+          words: rawSentences[i]
+              .split(RegExp(r'\s+'))
+              .where((w) => w.isNotEmpty && RegExp(r'[a-zA-Z0-9]').hasMatch(w))
+              .toList(),
+        ),
+    ];
 
     _currentIndex = _sentences.isEmpty
         ? 0
@@ -545,10 +574,5 @@ class TtsIsolateWorker {
 
   void _emitState() {
     _toMainPort.send(StateUpdatedEvent(_state));
-  }
-
-  /// Sentence-splitting logic using literary typography and boundary rules.
-  static List<SentenceChunk> _splitIntoSentences(String text) {
-    return TtsTextNormalizer.splitIntoSentences(text);
   }
 }

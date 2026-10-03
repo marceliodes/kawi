@@ -442,27 +442,68 @@ class _PageContentWidget extends ConsumerWidget {
     }
 
     final sentence = ttsState.currentSentenceText.trim();
-    final matchIndex = text.indexOf(sentence);
-    if (matchIndex == -1) {
+    int matchStart = text.indexOf(sentence);
+    int matchEnd = matchStart != -1 ? matchStart + sentence.length : -1;
+
+    // Fallback: if exact match fails due to line-breaks (\n) vs spaces (' ')
+    if (matchStart == -1) {
+      final words = sentence
+          .split(RegExp(r'\s+'))
+          .where((w) => w.isNotEmpty)
+          .toList();
+      if (words.isNotEmpty) {
+        final pattern = RegExp(
+          words.map(RegExp.escape).join(r'\s+'),
+          caseSensitive: false,
+        );
+        final m = pattern.firstMatch(text);
+        if (m != null) {
+          matchStart = m.start;
+          matchEnd = m.end;
+        }
+      }
+    }
+
+    if (matchStart == -1 || matchEnd <= matchStart) {
       return TextSpan(text: text, style: baseStyle);
     }
 
-    final before = text.substring(0, matchIndex);
-    final match = text.substring(matchIndex, matchIndex + sentence.length);
-    final after = text.substring(matchIndex + sentence.length);
+    final before = text.substring(0, matchStart);
+    final match = text.substring(matchStart, matchEnd);
+    final after = text.substring(matchEnd);
 
     final sentenceHighlightStyle = baseStyle.copyWith(
       backgroundColor: theme.accent.withValues(alpha: 0.18),
     );
 
     InlineSpan sentenceSpan;
-    if (ttsState.currentWord.isNotEmpty &&
-        ttsState.activeWordStart >= 0 &&
-        ttsState.activeWordEnd <= match.length &&
-        ttsState.activeWordStart < ttsState.activeWordEnd) {
-      final wBefore = match.substring(0, ttsState.activeWordStart);
-      final wWord = match.substring(ttsState.activeWordStart, ttsState.activeWordEnd);
-      final wAfter = match.substring(ttsState.activeWordEnd);
+    int wordStart = ttsState.activeWordStart;
+    int wordEnd = ttsState.activeWordEnd;
+    bool validOffsets = ttsState.currentWord.isNotEmpty &&
+        wordStart >= 0 &&
+        wordEnd <= match.length &&
+        wordStart < wordEnd &&
+        match.substring(wordStart, wordEnd).toLowerCase().contains(
+              ttsState.currentWord.toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), ''),
+            );
+
+    if (!validOffsets && ttsState.currentWord.trim().isNotEmpty) {
+      // Fallback: search for currentWord directly inside match
+      final cleanWord = RegExp.escape(ttsState.currentWord.trim());
+      final wordRegex = RegExp(r'\b' + cleanWord + r'\b', caseSensitive: false);
+      final wordMatch = wordRegex.firstMatch(match) ??
+          RegExp(cleanWord, caseSensitive: false).firstMatch(match);
+      if (wordMatch != null) {
+        wordStart = wordMatch.start;
+        wordEnd = wordMatch.end;
+        validOffsets = true;
+      }
+    }
+
+    if (validOffsets) {
+      final wBefore = match.substring(0, wordStart);
+      final wWord = match.substring(wordStart, wordEnd);
+      final wAfter = match.substring(wordEnd);
 
       sentenceSpan = TextSpan(
         style: sentenceHighlightStyle,
