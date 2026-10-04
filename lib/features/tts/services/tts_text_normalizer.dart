@@ -70,6 +70,64 @@ class TtsTextNormalizer {
     return result;
   }
 
+  /// Completely flattens soft line wraps within paragraphs and removes image/HTML artifacts:
+  /// - Step A: Removes image placeholders and HTML artifacts
+  /// - Step B: Replaces soft line breaks (single \n surrounded by text) with a single space.
+  ///   Does NOT touch double newlines (\n\n) which represent paragraph breaks.
+  /// - Step C: Collapses consecutive whitespace/tabs into a single space and trims.
+  static String flattenSoftLineBreaks(String rawText) {
+    if (rawText.isEmpty) return rawText;
+
+    // A. Strip image tokens and tags
+    String cleaned = rawText
+        .replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '')
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .replaceAll(RegExp(r'\[\s*\]'), '');
+
+    // Reattach closing quotes/brackets wrapped onto a new line to preceding terminal punctuation
+    cleaned = cleaned.replaceAllMapped(
+      RegExp(r"""([.!?…])[ \t]*(?:\r?\n(?!\r?\n)[ \t]*|[ \t]+)(["'”’»\)\]]+)"""),
+      (m) => '${m[1]}${m[2]}',
+    );
+
+    // B. Normalize Windows/Mac line endings to \n
+    cleaned = cleaned.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+    // C. Split into paragraphs by double-newlines
+    final paragraphs = cleaned.split(RegExp(r'\n{2,}'));
+
+    // D. In each paragraph, replace every single \n with a space and collapse whitespace
+    final flattenedParagraphs = paragraphs.map((p) {
+      return p
+          .replaceAll('\n', ' ')
+          .replaceAll(RegExp(r'[ \t]+'), ' ')
+          .trim();
+    }).where((p) => p.isNotEmpty);
+
+    // E. Rejoin paragraphs with double newlines
+    return flattenedParagraphs.join('\n\n');
+  }
+
+  /// Splits text into sanitized sentence strings according to literary typography rules:
+  /// 1. Flattens soft line wraps within paragraphs while preserving double newlines (\n\n).
+  /// 2. Splits ONLY on true terminal punctuation (. ! ?) followed by whitespace/quotes,
+  ///    OR on true paragraph breaks (\n\n).
+  /// 3. Discards orphan punctuation tokens without alphanumeric characters.
+  static List<String> extractSanitizedSentenceList(String rawText) {
+    final text = flattenSoftLineBreaks(rawText);
+    if (text.isEmpty) return const [];
+
+    final sentenceRegex = RegExp(
+      r'''(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e)\.["'”’]?)(?<=[.!?]["'”’]?)\s+(?=[A-Z0-9“"‘'])|(?:\r?\n){2,}''',
+    );
+
+    return text
+        .split(sentenceRegex)
+        .map((s) => s.replaceFirst(RegExp(r'''^[”’»\)\]]+\s*'''), '').trim())
+        .where((s) => s.isNotEmpty && RegExp(r'[a-zA-Z0-9]').hasMatch(s))
+        .toList();
+  }
+
   /// Normalizes whitespace inside paragraphs before sentence tokenization:
   /// - Strips image markers and HTML tags.
   /// - Standardizes CRLF and CR to LF.
@@ -78,47 +136,7 @@ class TtsTextNormalizer {
   ///   preventing hard line breaks in EPUBs from breaking sentences mid-clause.
   /// - Preserves double newlines (\n\n) as paragraph boundaries.
   static String normalizeParagraphWhitespace(String text) {
-    if (text.isEmpty) return text;
-
-    // 0. Filter out image placeholder tags and raw HTML tags
-    var result = filterPlaceholdersAndTags(text);
-
-    // 1. Convert all line break styles to standard \n
-    result = result.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-
-    // 2. Normalize unicode horizontal spaces (\u00A0, \u2000-\u200A, \u3000, tabs) to regular space
-    result = result.replaceAll(
-      RegExp(r'[\t\f\v\u00A0\u1680\u2000-\u200a\u202f\u205f\u3000]'),
-      ' ',
-    );
-
-    // 3. Un-wrap lines where a line break is followed by a lowercase letter (continuation of sentence/clause)
-    result = result.replaceAll(RegExp(r'\n+(?=[a-z])'), ' ');
-
-    // 4. Attach closing quotes/brackets wrapped onto a new line back to preceding terminal punctuation
-    // (only across single line-wrap, not across true paragraph breaks \n\n)
-    result = result.replaceAllMapped(
-      RegExp(r"""([.!?…])[ \t]*(?:\n(?!\n)[ \t]*|[ \t]+)(["'”’»\)\]]+)"""),
-      (m) => '${m[1]}${m[2]}',
-    );
-
-    // 5. Preserve paragraph breaks (\n\n+) by protecting them
-    const paragraphBreakPlaceholder = '\uE000';
-    result = result.replaceAll(
-      RegExp(r'[ \t]*\n(?:[ \t]*\n)+[ \t]*'),
-      paragraphBreakPlaceholder,
-    );
-
-    // 6. Replace any soft/single newline (not part of a double newline \n\n) with a single space:
-    result = result.replaceAll(RegExp(r'(?<!\n)\s*\r?\n\s*(?!\n)'), ' ');
-
-    // 7. Restore paragraph breaks
-    result = result.replaceAll(paragraphBreakPlaceholder, '\n\n');
-
-    // 8. Collapse consecutive spaces/tabs into a single space:
-    result = result.replaceAll(RegExp(r'[ \t]+'), ' ');
-
-    return result.trim();
+    return flattenSoftLineBreaks(text);
   }
 
   /// Normalizes all-caps words to avoid TTS acronym confusion (e.g. "IT" pronounced "I. T."):
@@ -201,18 +219,8 @@ class TtsTextNormalizer {
   /// 4. Discards any resulting token that has no alphanumeric characters.
   /// 5. Normalizes all-caps chapter openers and words in each sentence chunk.
   static List<SentenceChunk> splitIntoSentences(String text) {
-    final normalized = normalizeParagraphWhitespace(text);
-    if (normalized.trim().isEmpty) return const [];
-
-    final sentenceRegex = RegExp(
-      r'''(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e)\.["'”’]?)(?<=[.!?]["'”’]?)\s+(?=[A-Z0-9“"‘'])|(?:\r?\n){2,}''',
-    );
-
-    final rawSentences = normalized
-        .split(sentenceRegex)
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty && RegExp(r'[a-zA-Z0-9]').hasMatch(s))
-        .toList();
+    final rawSentences = extractSanitizedSentenceList(text);
+    if (rawSentences.isEmpty) return const [];
 
     final sentences = <SentenceChunk>[];
     for (var i = 0; i < rawSentences.length; i++) {

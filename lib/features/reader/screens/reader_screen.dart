@@ -296,7 +296,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         );
         var raw = pageContent.plainText.trim();
         if (raw.isNotEmpty) {
-          raw = TtsTextNormalizer.normalizeParagraphWhitespace(raw);
+          raw = TtsTextNormalizer.flattenSoftLineBreaks(raw);
           if (raw.isNotEmpty) {
             pageTexts.add(raw);
           }
@@ -319,7 +319,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         );
         var raw = nextContent.plainText.trim();
         if (raw.isNotEmpty) {
-          raw = TtsTextNormalizer.normalizeParagraphWhitespace(raw);
+          raw = TtsTextNormalizer.flattenSoftLineBreaks(raw);
           if (raw.isNotEmpty) {
             pageTexts.add(raw);
           }
@@ -333,7 +333,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       textToRead = TtsTextNormalizer.filterPlaceholdersAndTags(textToRead);
 
       // Normalize line breaks into paragraph structure
-      textToRead = TtsTextNormalizer.normalizeParagraphWhitespace(textToRead);
+      textToRead = TtsTextNormalizer.flattenSoftLineBreaks(textToRead);
 
       if (fromSentence != null && fromSentence.trim().isNotEmpty) {
         final needle = fromSentence.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -357,7 +357,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               );
               var pText = content.plainText;
               pText = TtsTextNormalizer.filterPlaceholdersAndTags(pText);
-              pText = TtsTextNormalizer.normalizeParagraphWhitespace(pText);
+              pText = TtsTextNormalizer.flattenSoftLineBreaks(pText);
               final pMatch = needlePattern.firstMatch(pText);
               if (pMatch != null) {
                 textToRead = pText.substring(pMatch.start);

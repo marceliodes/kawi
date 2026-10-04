@@ -13,6 +13,7 @@ import '../models/reader_settings.dart';
 import '../providers/document_content_provider.dart';
 import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
+import '../../tts/services/tts_text_normalizer.dart';
 
 class ReaderCanvas extends ConsumerStatefulWidget {
   const ReaderCanvas({
@@ -359,7 +360,7 @@ class _PageContentWidget extends ConsumerWidget {
         ),
       ),
       data: (content) {
-        final text = content.plainText.trim();
+        final text = TtsTextNormalizer.flattenSoftLineBreaks(content.plainText);
 
         final isPaginated = settings.isPaginated;
 
@@ -436,101 +437,132 @@ class _PageContentWidget extends ConsumerWidget {
     required ReaderThemeData theme,
     required TtsState ttsState,
   }) {
-    if ((!ttsState.isPlaying && !ttsState.isPaused) ||
-        ttsState.currentSentenceText.trim().isEmpty) {
-      return TextSpan(text: text, style: baseStyle);
-    }
-
-    final sentence = ttsState.currentSentenceText.trim();
-    int matchStart = text.indexOf(sentence);
-    int matchEnd = matchStart != -1 ? matchStart + sentence.length : -1;
-
-    // Fallback: if exact match fails due to line-breaks (\n) vs spaces (' ')
-    if (matchStart == -1) {
-      final words = sentence
-          .split(RegExp(r'\s+'))
-          .where((w) => w.isNotEmpty)
-          .toList();
-      if (words.isNotEmpty) {
-        final pattern = RegExp(
-          words.map(RegExp.escape).join(r'\s+'),
-          caseSensitive: false,
-        );
-        final m = pattern.firstMatch(text);
-        if (m != null) {
-          matchStart = m.start;
-          matchEnd = m.end;
-        }
-      }
-    }
-
-    if (matchStart == -1 || matchEnd <= matchStart) {
-      return TextSpan(text: text, style: baseStyle);
-    }
-
-    final before = text.substring(0, matchStart);
-    final match = text.substring(matchStart, matchEnd);
-    final after = text.substring(matchEnd);
+    final isTtsActive =
+        (ttsState.isPlaying || ttsState.isPaused) &&
+        ttsState.currentSentenceText.trim().isNotEmpty;
 
     final sentenceHighlightStyle = baseStyle.copyWith(
       backgroundColor: theme.accent.withValues(alpha: 0.18),
     );
 
-    InlineSpan sentenceSpan;
-    int wordStart = ttsState.activeWordStart;
-    int wordEnd = ttsState.activeWordEnd;
-    bool validOffsets = ttsState.currentWord.isNotEmpty &&
-        wordStart >= 0 &&
-        wordEnd <= match.length &&
-        wordStart < wordEnd &&
-        match.substring(wordStart, wordEnd).toLowerCase().contains(
-              ttsState.currentWord.toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), ''),
-            );
+    final paragraphRegex = RegExp(r'(?:\r?\n){2,}');
+    final sentenceDelimiter = RegExp(
+      r'''(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e)\.["'”’]?)(?<=[.!?]["'”’]?)\s+(?=[A-Z0-9“"‘'])''',
+    );
 
-    if (!validOffsets && ttsState.currentWord.trim().isNotEmpty) {
-      // Fallback: search for currentWord directly inside match
-      final cleanWord = RegExp.escape(ttsState.currentWord.trim());
-      final wordRegex = RegExp(r'\b' + cleanWord + r'\b', caseSensitive: false);
-      final wordMatch = wordRegex.firstMatch(match) ??
-          RegExp(cleanWord, caseSensitive: false).firstMatch(match);
-      if (wordMatch != null) {
-        wordStart = wordMatch.start;
-        wordEnd = wordMatch.end;
-        validOffsets = true;
-      }
+    final paragraphs = text
+        .split(paragraphRegex)
+        .map((p) => p.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+
+    if (paragraphs.isEmpty) {
+      return TextSpan(text: text, style: baseStyle);
     }
 
-    if (validOffsets) {
-      final wBefore = match.substring(0, wordStart);
-      final wWord = match.substring(wordStart, wordEnd);
-      final wAfter = match.substring(wordEnd);
+    final children = <InlineSpan>[];
+    bool hasHighlighted = false;
 
-      sentenceSpan = TextSpan(
-        style: sentenceHighlightStyle,
-        children: [
-          if (wBefore.isNotEmpty) TextSpan(text: wBefore),
-          TextSpan(
-            text: wWord,
-            style: sentenceHighlightStyle.copyWith(
-              backgroundColor: theme.accent.withValues(alpha: 0.38),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          if (wAfter.isNotEmpty) TextSpan(text: wAfter),
-        ],
-      );
-    } else {
-      sentenceSpan = TextSpan(text: match, style: sentenceHighlightStyle);
+    for (var pIdx = 0; pIdx < paragraphs.length; pIdx++) {
+      if (pIdx > 0) {
+        children.add(const TextSpan(text: '\n\n'));
+      }
+
+      final p = paragraphs[pIdx];
+      final sentences = p
+          .split(sentenceDelimiter)
+          .map((s) => s.replaceFirst(RegExp(r'''^[”’»\)\]]+\s*'''), '').trim())
+          .where((s) => s.isNotEmpty && RegExp(r'[a-zA-Z0-9]').hasMatch(s))
+          .toList();
+
+      if (sentences.isEmpty) {
+        children.add(TextSpan(text: p, style: baseStyle));
+        continue;
+      }
+
+      for (var sIdx = 0; sIdx < sentences.length; sIdx++) {
+        if (sIdx > 0) {
+          children.add(const TextSpan(text: ' '));
+        }
+
+        final sentence = sentences[sIdx];
+        final bool isMatch = isTtsActive &&
+            !hasHighlighted &&
+            _isSentenceMatch(sentence, ttsState.currentSentenceText);
+
+        if (isMatch) {
+          hasHighlighted = true;
+
+          int wordStart = ttsState.activeWordStart;
+          int wordEnd = ttsState.activeWordEnd;
+          bool validOffsets = ttsState.currentWord.isNotEmpty &&
+              wordStart >= 0 &&
+              wordEnd <= sentence.length &&
+              wordStart < wordEnd &&
+              sentence.substring(wordStart, wordEnd).toLowerCase().contains(
+                    ttsState.currentWord
+                        .toLowerCase()
+                        .replaceAll(RegExp(r'[^a-zA-Z0-9]'), ''),
+                  );
+
+          if (!validOffsets && ttsState.currentWord.trim().isNotEmpty) {
+            final cleanWord = RegExp.escape(ttsState.currentWord.trim());
+            final wordRegex =
+                RegExp(r'\b' + cleanWord + r'\b', caseSensitive: false);
+            final wordMatch = wordRegex.firstMatch(sentence) ??
+                RegExp(cleanWord, caseSensitive: false).firstMatch(sentence);
+            if (wordMatch != null) {
+              wordStart = wordMatch.start;
+              wordEnd = wordMatch.end;
+              validOffsets = true;
+            }
+          }
+
+          if (validOffsets) {
+            final wBefore = sentence.substring(0, wordStart);
+            final wWord = sentence.substring(wordStart, wordEnd);
+            final wAfter = sentence.substring(wordEnd);
+
+            children.add(
+              TextSpan(
+                style: sentenceHighlightStyle,
+                children: [
+                  if (wBefore.isNotEmpty) TextSpan(text: wBefore),
+                  TextSpan(
+                    text: wWord,
+                    style: sentenceHighlightStyle.copyWith(
+                      backgroundColor: theme.accent.withValues(alpha: 0.38),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (wAfter.isNotEmpty) TextSpan(text: wAfter),
+                ],
+              ),
+            );
+          } else {
+            children.add(
+              TextSpan(text: sentence, style: sentenceHighlightStyle),
+            );
+          }
+        } else {
+          children.add(TextSpan(text: sentence, style: baseStyle));
+        }
+      }
     }
 
     return TextSpan(
       style: baseStyle,
-      children: [
-        if (before.isNotEmpty) TextSpan(text: before),
-        sentenceSpan,
-        if (after.isNotEmpty) TextSpan(text: after),
-      ],
+      children: children,
     );
+  }
+
+  bool _isSentenceMatch(String uiSentence, String ttsSentence) {
+    final ui = uiSentence.trim();
+    final tts = ttsSentence.trim();
+    if (ui.isEmpty || tts.isEmpty) return false;
+    if (ui == tts) return true;
+    if (TtsTextNormalizer.normalizeAllCaps(ui) == tts) return true;
+    return ui.toLowerCase() == tts.toLowerCase();
   }
 
   Widget _buildContextMenu(
