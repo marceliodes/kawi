@@ -76,3 +76,70 @@ class ImageNode extends DocumentNode {
   String toString() =>
       'ImageNode(${bytes.length} bytes, altText: "$altText")';
 }
+
+/// Represents a paginated slice (a single screen/page) of a chapter.
+///
+/// Contains the layout [nodes] that fit within the viewport height, along with
+/// anchor metadata ([startParagraphIndex], [endParagraphIndex], [startCharOffset], [endCharOffset])
+/// to preserve reader positioning across font size changes or column resizing.
+class PageChunk {
+  const PageChunk({
+    required this.pageIndexInChapter,
+    required this.chapterIndex,
+    required this.nodes,
+    required this.startParagraphIndex,
+    required this.endParagraphIndex,
+    required this.startCharOffset,
+    required this.endCharOffset,
+  });
+
+  final int pageIndexInChapter;
+  final int chapterIndex;
+  final List<DocumentNode> nodes;
+  final int startParagraphIndex;
+  final int endParagraphIndex;
+  final int startCharOffset;
+  final int endCharOffset;
+
+  /// Returns true if this page contains the specified paragraph and character anchor.
+  bool containsAnchor({
+    required int paragraphIndex,
+    required int charOffset,
+  }) {
+    if (paragraphIndex < startParagraphIndex ||
+        paragraphIndex > endParagraphIndex) {
+      return false;
+    }
+    if (paragraphIndex == startParagraphIndex &&
+        paragraphIndex == endParagraphIndex) {
+      return charOffset >= startCharOffset && charOffset <= endCharOffset;
+    }
+    if (paragraphIndex == startParagraphIndex) {
+      return charOffset >= startCharOffset;
+    }
+    if (paragraphIndex == endParagraphIndex) {
+      return charOffset <= endCharOffset;
+    }
+    return true;
+  }
+
+  /// Concatenated plain text of all text-bearing nodes on this page.
+  String get plainText {
+    final buffer = StringBuffer();
+    for (final node in nodes) {
+      if (node is ParagraphNode) {
+        if (buffer.isNotEmpty) buffer.write('\n\n');
+        buffer.write(node.plainText);
+      } else if (node is HeadingNode) {
+        if (buffer.isNotEmpty) buffer.write('\n\n');
+        buffer.write(node.plainText);
+      }
+    }
+    return buffer.toString();
+  }
+
+  @override
+  String toString() =>
+      'PageChunk(p$pageIndexInChapter in ch$chapterIndex, nodes: ${nodes.length}, P[$startParagraphIndex:$startCharOffset] -> P[$endParagraphIndex:$endCharOffset])';
+}
+
