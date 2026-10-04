@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../../../core/database/app_database.dart';
+
 /// Abstract base class for all semantic document AST nodes.
 sealed class DocumentNode {
   const DocumentNode();
@@ -141,5 +143,12 @@ class PageChunk {
   @override
   String toString() =>
       'PageChunk(p$pageIndexInChapter in ch$chapterIndex, nodes: ${nodes.length}, P[$startParagraphIndex:$startCharOffset] -> P[$endParagraphIndex:$endCharOffset])';
+}
+
+/// Convenience extension on Drift [DocumentEntry] to detect EPUB documents.
+extension DocumentEntryX on DocumentEntry {
+  bool get isEpub =>
+      format.toLowerCase() == 'epub' ||
+      filePath.toLowerCase().endsWith('.epub');
 }
 

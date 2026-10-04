@@ -29,6 +29,9 @@ class ReaderSettings {
 
   bool get isPaginated => mode == ReadingMode.paginated;
 
+  /// Alias for contentMaxWidth to support columnWidth property access.
+  double get columnWidth => contentMaxWidth;
+
   ReaderSettings copyWith({
     String? fontFamily,
     double? fontSize,

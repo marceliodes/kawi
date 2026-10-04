@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/painting.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -32,6 +34,61 @@ final documentChapterNodesProvider =
   ref,
   arg,
 ) async {
+  final file = File(arg.filePath);
+  if (!file.existsSync()) {
+    int startPage = arg.chapterIndex;
+    int endPage = arg.chapterIndex + 1;
+    try {
+      final tocAsync = ref.watch(documentTocProvider(arg.filePath));
+      final toc = tocAsync.asData?.value;
+      if (toc != null && toc.isNotEmpty) {
+        final flat = <TocEntry>[];
+        void flatten(List<TocEntry> list) {
+          for (final e in list) {
+            flat.add(e);
+            if (e.children.isNotEmpty) flatten(e.children);
+          }
+        }
+        flatten(toc);
+        flat.sort((a, b) => a.pageIndex.compareTo(b.pageIndex));
+        for (var i = 0; i < flat.length; i++) {
+          if (flat[i].pageIndex <= arg.chapterIndex) {
+            startPage = flat[i].pageIndex;
+            if (i + 1 < flat.length) {
+              endPage = flat[i + 1].pageIndex;
+            } else {
+              endPage = startPage + 1;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    final nodes = <DocumentNode>[];
+    for (var p = startPage; p < endPage; p++) {
+      try {
+        final page = await ref.watch(
+          documentPageContentProvider((
+            filePath: arg.filePath,
+            pageIndex: p,
+          )).future,
+        );
+        if (page.plainText.isEmpty) continue;
+        final cleanText = page.plainText
+            .replaceAll(RegExp(r'\[image[^\]]*\]', caseSensitive: false), '')
+            .replaceAll(RegExp(r'<[^>]*>'), '')
+            .trim();
+        if (cleanText.isEmpty) continue;
+        final paragraphs = cleanText
+            .split(RegExp(r'\n{2,}'))
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .map((s) => ParagraphNode([TextSegment(s)]));
+        nodes.addAll(paragraphs);
+      } catch (_) {}
+    }
+    return nodes;
+  }
   return DocumentExtractor.extractChapterNodes(arg.filePath, arg.chapterIndex);
 });
 
