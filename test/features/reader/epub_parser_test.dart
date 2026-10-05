@@ -100,6 +100,83 @@ void main() {
       expect(boldSegs.length, 1);
       expect(boldSegs.first.text, 'world!');
     });
+
+    test('extracts standalone ImageNode when wrapped inside <p> or <div>', () {
+      const html = '''
+<html>
+  <body>
+    <p><img src="images/cover.jpg" alt="Cover Image" /></p>
+    <div class="illustration"><img src="images/map.png" alt="Map" /></div>
+  </body>
+</html>
+''';
+      final imageBytes = {
+        'images/cover.jpg': [1, 2, 3],
+        'images/map.png': [4, 5, 6],
+      };
+      final nodes = EpubParser.parseChapterHtml(html, null, imageBytes: imageBytes);
+
+      expect(nodes.length, 2);
+      expect(nodes[0], isA<ImageNode>());
+      expect((nodes[0] as ImageNode).altText, 'Cover Image');
+      expect((nodes[0] as ImageNode).bytes, [1, 2, 3]);
+
+      expect(nodes[1], isA<ImageNode>());
+      expect((nodes[1] as ImageNode).altText, 'Map');
+      expect((nodes[1] as ImageNode).bytes, [4, 5, 6]);
+    });
+
+    test('splits <p> containing text followed by <img> into ParagraphNode and ImageNode', () {
+      const html = '''
+<html>
+  <body>
+    <p>Bracing myself, I began to read.<img src="images/diary.png" alt="The Diary" /></p>
+  </body>
+</html>
+''';
+      final imageBytes = {
+        'images/diary.png': [10, 20, 30],
+      };
+      final nodes = EpubParser.parseChapterHtml(html, null, imageBytes: imageBytes);
+
+      expect(nodes.length, 2);
+      expect(nodes[0], isA<ParagraphNode>());
+      expect((nodes[0] as ParagraphNode).plainText, 'Bracing myself, I began to read.');
+
+      expect(nodes[1], isA<ImageNode>());
+      expect((nodes[1] as ImageNode).altText, 'The Diary');
+      expect((nodes[1] as ImageNode).bytes, [10, 20, 30]);
+    });
+
+    test('splits mixed text, images, and captions inside <figure> and <div>', () {
+      const html = '''
+<div>
+  Text before illustration
+  <figure>
+    <img src="images/diagram.png" alt="Diagram" />
+    <figcaption>Figure 1: System Diagram</figcaption>
+  </figure>
+  Text after illustration
+</div>
+''';
+      final imageBytes = {
+        'images/diagram.png': [7, 8, 9],
+      };
+      final nodes = EpubParser.parseChapterHtml(html, null, imageBytes: imageBytes);
+
+      expect(nodes.length, 4);
+      expect(nodes[0], isA<ParagraphNode>());
+      expect((nodes[0] as ParagraphNode).plainText, 'Text before illustration');
+
+      expect(nodes[1], isA<ImageNode>());
+      expect((nodes[1] as ImageNode).altText, 'Diagram');
+
+      expect(nodes[2], isA<ParagraphNode>());
+      expect((nodes[2] as ParagraphNode).plainText, 'Figure 1: System Diagram');
+
+      expect(nodes[3], isA<ParagraphNode>());
+      expect((nodes[3] as ParagraphNode).plainText, 'Text after illustration');
+    });
   });
 
   group('EpubService & DocumentExtractor Integration Tests', () {

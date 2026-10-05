@@ -196,7 +196,7 @@ void main() {
       expect(find.text('Next Chapter'), findsOneWidget);
     });
 
-    testWidgets('TTS highlighting renders active sentence and word spans',
+    testWidgets('TTS highlighting renders active sentence span without word fragmentation',
         (tester) async {
       if (!epubFile.existsSync() || sampleNodes.isEmpty) return;
 
@@ -282,7 +282,7 @@ void main() {
 
       checkSpan(renderedSpan);
       expect(hasSentenceHighlight, isTrue);
-      expect(hasWordHighlight, isTrue);
+      expect(hasWordHighlight, isFalse);
     });
 
     testWidgets('_startTts sends clean semantic text to TTS engine',
@@ -494,10 +494,13 @@ void main() {
       final nextChapterBtn = find.text('Next Chapter');
       expect(nextChapterBtn, findsOneWidget);
       await tester.tap(nextChapterBtn);
-      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pump(const Duration(milliseconds: 50));
 
       // Document progress should advance to chapter 1
-      final updatedCanvas = tester.widget<ReaderCanvas>(find.byType(ReaderCanvas));
+      final updatedCanvas =
+          tester.widget<ReaderCanvas>(find.byType(ReaderCanvas).last);
       expect(updatedCanvas.chapterIndex, 1);
     });
   });

@@ -86,6 +86,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             0,
             widget.document.pageCount > 0 ? widget.document.pageCount - 1 : 0,
           );
+          _currentPageIndexInChapter = progress.lastReadSentenceIndex;
           _currentScrollOffset = progress.lastReadScrollOffset;
           _currentChapterTitle = progress.currentChapter;
         });
@@ -93,6 +94,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         // Restore scroll or page position after layout
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
+          if (_pageController.hasClients && _currentPageIndexInChapter > 0) {
+            _pageController.jumpToPage(_currentPageIndexInChapter);
+          }
           _canvasKey.currentState?.scrollToPage(_currentPageIndex);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) _isRestoring = false;
@@ -153,7 +157,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       _currentPageIndexInChapter = pageIndexInChapter;
     });
     _resolveChapterTitle(chapterIndex);
-    _debounceSaveProgress(chapterIndex, 0.0);
+    _debounceSaveProgress(chapterIndex, 0.0, pageIndexInChapter: pageIndexInChapter);
   }
 
   void _navigateToNextChapter() {
@@ -192,7 +196,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     });
   }
 
-  void _debounceSaveProgress(int pageIndex, double offset) {
+  void _debounceSaveProgress(int pageIndex, double offset, {int? pageIndexInChapter}) {
     _progressSaveDebounce?.cancel();
     _progressSaveDebounce = Timer(const Duration(milliseconds: 500), () async {
       try {
@@ -201,6 +205,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           ReadingProgressesCompanion.insert(
             documentId: widget.document.id,
             lastReadPageIndex: Value(pageIndex),
+            lastReadSentenceIndex:
+                Value(pageIndexInChapter ?? _currentPageIndexInChapter),
             lastReadScrollOffset: Value(offset),
             currentChapter: Value(_currentChapterTitle),
             updatedAt: DateTime.now(),
@@ -256,10 +262,32 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         String textToRead = '';
 
         if (settings.isPaginated && _currentChapterPages.isNotEmpty) {
-          final chunkIdx = _currentPageIndexInChapter.clamp(
+          var chunkIdx = _currentPageIndexInChapter.clamp(
             0,
             _currentChapterPages.length - 1,
           );
+          // If the current page is an image or has no text, advance to the first subsequent page with text
+          while (chunkIdx < _currentChapterPages.length &&
+              _currentChapterPages[chunkIdx].plainText.trim().isEmpty) {
+            chunkIdx++;
+          }
+          if (chunkIdx >= _currentChapterPages.length) {
+            // No text in remainder of chapter
+            return;
+          }
+          if (chunkIdx != _currentPageIndexInChapter) {
+            if (_pageController.hasClients) {
+              _pageController.animateToPage(
+                chunkIdx,
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeInOut,
+              );
+            }
+            setState(() {
+              _currentPageIndexInChapter = chunkIdx;
+            });
+          }
+
           final buffer = StringBuffer();
           for (var i = chunkIdx; i < _currentChapterPages.length; i++) {
             final t = _currentChapterPages[i].plainText.trim();
@@ -640,30 +668,42 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
               // Main Reading Canvas
               Positioned.fill(
-                child: ReaderCanvas(
-                  key: _canvasKey,
-                  filePath: widget.document.filePath,
-                  pageCount: widget.document.pageCount,
-                  settings: settings,
-                  initialPageIndex: _currentPageIndex,
-                  initialScrollOffset: _currentScrollOffset,
-                  scrollController: _scrollController,
-                  itemScrollController: _itemScrollController,
-                  itemPositionsListener: _itemPositionsListener,
-                  pageController: _pageController,
-                  onPageChanged: _onPageOrScrollChanged,
-                  onToggleChrome: _toggleChrome,
-                  onPlayFromHere: (sentence) {
-                    _startTts(fromSentence: sentence);
-                  },
-                  epubChunks: epubChunks,
-                  epubNodes: epubNodes,
-                  isEpub: isEpub,
-                  chapterIndex: _currentPageIndex,
-                  pageIndexInChapter: _currentPageIndexInChapter,
-                  onNextChapter: _navigateToNextChapter,
-                  onPreviousChapter: _navigateToPreviousChapter,
-                  onEpubPageChanged: _onEpubPageChanged,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeOut,
+                  transitionBuilder: (child, animation) =>
+                      FadeTransition(opacity: animation, child: child),
+                  child: KeyedSubtree(
+                    key: ValueKey(
+                      '${widget.document.id}_${isEpub ? (settings.isPaginated ? _currentPageIndex : "continuous") : "pdf"}',
+                    ),
+                    child: ReaderCanvas(
+                      key: isEpub ? null : _canvasKey,
+                      filePath: widget.document.filePath,
+                      pageCount: widget.document.pageCount,
+                      settings: settings,
+                      initialPageIndex: _currentPageIndex,
+                      initialScrollOffset: _currentScrollOffset,
+                      scrollController: _scrollController,
+                      itemScrollController: _itemScrollController,
+                      itemPositionsListener: _itemPositionsListener,
+                      pageController: _pageController,
+                      onPageChanged: _onPageOrScrollChanged,
+                      onToggleChrome: _toggleChrome,
+                      onPlayFromHere: (sentence) {
+                        _startTts(fromSentence: sentence);
+                      },
+                      epubChunks: epubChunks,
+                      epubNodes: epubNodes,
+                      isEpub: isEpub,
+                      chapterIndex: _currentPageIndex,
+                      pageIndexInChapter: _currentPageIndexInChapter,
+                      onNextChapter: _navigateToNextChapter,
+                      onPreviousChapter: _navigateToPreviousChapter,
+                      onEpubPageChanged: _onEpubPageChanged,
+                    ),
+                  ),
                 ),
               ),
 
@@ -700,6 +740,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       theme,
                       progressPercent,
                       totalPages,
+                      isEpub: isEpub,
                       isEpubPaginated: isEpub && settings.isPaginated,
                     ),
                   ),
@@ -858,11 +899,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     ReaderThemeData theme,
     int progressPercent,
     int totalPages, {
+    bool isEpub = false,
     bool isEpubPaginated = false,
   }) {
-    final statusText = isEpubPaginated
-        ? 'Page ${_currentPageIndexInChapter + 1} of $totalPages ($progressPercent%)'
-        : 'Page ${_currentPageIndex + 1} of $totalPages ($progressPercent%)';
+    final String statusText;
+    if (isEpub) {
+      if (isEpubPaginated) {
+        statusText =
+            'Page ${_currentPageIndexInChapter + 1} of $totalPages • $progressPercent%';
+      } else {
+        statusText = '$progressPercent%';
+      }
+    } else {
+      statusText =
+          'Page ${_currentPageIndex + 1} of $totalPages ($progressPercent%)';
+    }
 
     return Container(
       padding: EdgeInsets.only(
@@ -878,15 +929,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            _currentChapterTitle ?? 'Reading',
-            style: AppTypography.micro.copyWith(
-              color: theme.textMuted,
-              fontWeight: FontWeight.w500,
+          Expanded(
+            child: Text(
+              _currentChapterTitle ??
+                  (isEpub
+                      ? 'Chapter ${_currentPageIndex + 1}'
+                      : 'Page ${_currentPageIndex + 1}'),
+              style: AppTypography.micro.copyWith(
+                color: theme.textMuted,
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
           ),
+          const SizedBox(width: Spacing.md),
           Text(
             statusText,
             style: AppTypography.micro.copyWith(

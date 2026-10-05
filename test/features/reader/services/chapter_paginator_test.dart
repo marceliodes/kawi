@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -55,6 +57,40 @@ void main() {
       expect(pages.first.chapterIndex, 2);
       expect(pages.first.nodes, isEmpty);
       expect(pages.first.pageIndexInChapter, 0);
+    });
+
+    test('places ImageNode on its own strictly dedicated PageChunk', () {
+      final imgNode = ImageNode(Uint8List.fromList([1, 2, 3]), 'Illustration');
+      final nodes = [
+        const HeadingNode(1, [TextSegment('Chapter One')]),
+        const ParagraphNode([TextSegment('Some intro text before the illustration.')]),
+        imgNode,
+        const ParagraphNode([TextSegment('Some subsequent text after the illustration.')]),
+      ];
+
+      final pages = ChapterPaginator.paginate(
+        nodes: nodes,
+        maxWidth: 400,
+        maxHeight: 1000,
+        textStyle: baseStyle,
+        paragraphSpacing: paragraphSpacing,
+      );
+
+      // Should be split into 3 distinct pages:
+      // Page 0: Heading + Paragraph 1
+      // Page 1: Dedicated ImageNode alone
+      // Page 2: Paragraph 2 alone
+      expect(pages.length, 3);
+
+      expect(pages[0].nodes.length, 2);
+      expect(pages[0].nodes[0], isA<HeadingNode>());
+      expect(pages[0].nodes[1], isA<ParagraphNode>());
+
+      expect(pages[1].nodes.length, 1);
+      expect(pages[1].nodes.first, same(imgNode));
+
+      expect(pages[2].nodes.length, 1);
+      expect(pages[2].nodes.first, isA<ParagraphNode>());
     });
   });
 

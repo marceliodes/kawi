@@ -70,20 +70,37 @@ class ChapterPaginator {
         pageStartCharOffset = startOffsetInThisNode;
       }
 
-      // Handle ImageNode
       if (currentNode is ImageNode) {
-        const estimatedImageHeight = 250.0;
-        if (estimatedImageHeight <= remainingHeight || currentPageNodes.isEmpty) {
-          currentPageNodes.add(currentNode);
-          remainingHeight -= (estimatedImageHeight + paragraphSpacing);
-          pageEndNodeIndex = originalNodeIndex;
-          pageEndCharOffset = 0;
-          inFlightNode = null;
-          inFlightCharOffset = 0;
-          i++;
-        } else {
-          finalizePage();
+        // Finalize any accumulated text nodes before the image
+        if (currentPageNodes.isNotEmpty) {
+          pages.add(PageChunk(
+            pageIndexInChapter: pages.length,
+            chapterIndex: chapterIndex,
+            nodes: List.unmodifiable(currentPageNodes),
+            startParagraphIndex: pageStartNodeIndex,
+            endParagraphIndex: pageEndNodeIndex,
+            startCharOffset: pageStartCharOffset,
+            endCharOffset: pageEndCharOffset,
+          ));
+          currentPageNodes.clear();
         }
+
+        // Place the ImageNode strictly on its own standalone PageChunk
+        pages.add(PageChunk(
+          pageIndexInChapter: pages.length,
+          chapterIndex: chapterIndex,
+          nodes: [currentNode],
+          startParagraphIndex: originalNodeIndex,
+          endParagraphIndex: originalNodeIndex,
+          startCharOffset: 0,
+          endCharOffset: 0,
+        ));
+
+        // Reset pagination height for subsequent nodes
+        remainingHeight = maxHeight;
+        inFlightNode = null;
+        inFlightCharOffset = 0;
+        i++;
         continue;
       }
 

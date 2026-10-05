@@ -15,6 +15,45 @@ final documentTocProvider = FutureProvider.family<List<TocEntry>, String>((
   return DocumentExtractor.extractTableOfContents(filePath);
 });
 
+/// Resolves the chapter title for a specific chapter index from the TOC.
+final documentChapterTitleProvider =
+    FutureProvider.family<String?, ({String filePath, int chapterIndex})>((
+  ref,
+  arg,
+) async {
+  final toc = await ref.watch(documentTocProvider(arg.filePath).future);
+  if (toc.isEmpty) return null;
+
+  final flat = <TocEntry>[];
+  void flatten(List<TocEntry> list) {
+    for (final e in list) {
+      flat.add(e);
+      if (e.children.isNotEmpty) flatten(e.children);
+    }
+  }
+
+  flatten(toc);
+
+  // 1. Try exact match on page/chapter index
+  for (final entry in flat) {
+    if (entry.pageIndex == arg.chapterIndex && entry.title.trim().isNotEmpty) {
+      return entry.title.trim();
+    }
+  }
+
+  // 2. Fallback to closest preceding TOC entry
+  flat.sort((a, b) => a.pageIndex.compareTo(b.pageIndex));
+  String? closestTitle;
+  for (final entry in flat) {
+    if (entry.pageIndex <= arg.chapterIndex && entry.title.trim().isNotEmpty) {
+      closestTitle = entry.title.trim();
+    } else if (entry.pageIndex > arg.chapterIndex) {
+      break;
+    }
+  }
+  return closestTitle;
+});
+
 /// Loads and caches page text on-demand for a given document and page index.
 ///
 /// Preserved for backward compatibility with fixed-layout PDF pages.

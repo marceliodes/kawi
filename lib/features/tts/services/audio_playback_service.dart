@@ -15,14 +15,12 @@ class _PrebufferedAudio {
   final int sentenceIndex;
   final Uint8List wavBytes;
   final int durationMs;
-  final List<SentenceWord> words;
   final Future<String> filePathFuture;
 
   _PrebufferedAudio({
     required this.sentenceIndex,
     required this.wavBytes,
     required this.durationMs,
-    required this.words,
     required this.filePathFuture,
   });
 }
@@ -33,15 +31,16 @@ class _PrebufferedAudio {
 /// Communicates with [TtsIsolateWorker] via two-way port messaging.
 /// Strictly enforces that [AudioPlayer] runs on the main UI thread,
 /// receiving raw WAV byte arrays synthesized in the background isolate.
+///
+/// Highlighting is sentence-level only: [stateNotifier] changes when the
+/// active sentence or playback state changes, never on per-word audio ticks.
 class AudioPlaybackService {
   AudioPlaybackService({AudioPlayer? audioPlayer})
       : _audioPlayer = audioPlayer ?? AudioPlayer();
 
   final AudioPlayer _audioPlayer;
   StreamSubscription<void>? _playerCompleteSubscription;
-  StreamSubscription<Duration>? _playerPositionSubscription;
   bool _isAudioPlaying = false;
-  List<SentenceWord> _currentSentenceWords = const [];
   _PrebufferedAudio? _prebufferedAudio;
 
   bool get hasPrebufferedAudio => _prebufferedAudio != null;
@@ -89,9 +88,6 @@ class AudioPlaybackService {
       _onAudioPlaybackComplete();
     });
 
-    _playerPositionSubscription =
-        _audioPlayer.onPositionChanged.listen(_onAudioPositionChanged);
-
     final completer = Completer<void>();
 
     _fromIsolatePort.listen((message) {
@@ -132,11 +128,8 @@ class AudioPlaybackService {
       } else if (message is StateUpdatedEvent) {
         stateNotifier.value = message.state;
       } else if (message is WordBoundaryEvent) {
-        stateNotifier.value = currentState.copyWith(
-          currentWord: message.word,
-          activeWordStart: message.start,
-          activeWordEnd: message.end,
-        );
+        // Forwarded for optional consumers only; never mutates TtsState so
+        // that word ticks cannot cause UI rebuilds.
         _wordBoundaryController.add(message);
       } else if (message is AudioBufferEvent) {
         _audioBufferController.add(message);
@@ -196,12 +189,14 @@ class AudioPlaybackService {
       sentenceIndex: message.sentenceIndex,
       wavBytes: message.wavBytes,
       durationMs: message.durationMs,
-      words: message.words,
       filePathFuture: fileFuture,
     );
   }
 
   /// Plays synthesized WAV bytes on the main thread via AudioPlayer.
+  ///
+  /// [words] is accepted for API compatibility with the isolate protocol but
+  /// is not used: highlighting is sentence-level only.
   Future<void> playWavBytes(
     Uint8List wavBytes, {
     int sentenceIndex = 0,
@@ -223,28 +218,7 @@ class AudioPlaybackService {
       _prebufferedAudio = null;
     }
 
-    _currentSentenceWords = words;
-    if (words.isNotEmpty) {
-      final first = words.first;
-      stateNotifier.value = currentState.copyWith(
-        currentSentenceIndex: currentIndex,
-        currentWord: first.word,
-        activeWordStart: first.start,
-        activeWordEnd: first.end,
-      );
-      _wordBoundaryController.add(
-        WordBoundaryEvent(
-          sentenceIndex: currentIndex,
-          word: first.word,
-          start: first.start,
-          end: first.end,
-        ),
-      );
-    } else {
-      stateNotifier.value = currentState.copyWith(
-        currentSentenceIndex: currentIndex,
-      );
-    }
+    _setActiveSentence(currentIndex);
 
     _isAudioPlaying = true;
     try {
@@ -258,38 +232,21 @@ class AudioPlaybackService {
     }
   }
 
-  void _onAudioPositionChanged(Duration position) {
-    if (!_isAudioPlaying || _currentSentenceWords.isEmpty) return;
-
-    final posMs = position.inMilliseconds;
-    SentenceWord? matched;
-    for (final w in _currentSentenceWords) {
-      if (posMs >= w.startMs && posMs < w.endMs) {
-        matched = w;
-        break;
-      }
+  /// Emits a state update only when the active sentence actually changes.
+  void _setActiveSentence(int sentenceIndex) {
+    final s = currentState;
+    if (s.currentSentenceIndex == sentenceIndex &&
+        s.currentWord.isEmpty &&
+        s.activeWordStart == 0 &&
+        s.activeWordEnd == 0) {
+      return;
     }
-    matched ??= _currentSentenceWords.last;
-
-    if (matched.word.isNotEmpty &&
-        (matched.word != currentState.currentWord ||
-            matched.start != currentState.activeWordStart ||
-            matched.end != currentState.activeWordEnd)) {
-      stateNotifier.value = currentState.copyWith(
-        currentWord: matched.word,
-        activeWordStart: matched.start,
-        activeWordEnd: matched.end,
-      );
-
-      _wordBoundaryController.add(
-        WordBoundaryEvent(
-          sentenceIndex: currentState.currentSentenceIndex,
-          word: matched.word,
-          start: matched.start,
-          end: matched.end,
-        ),
-      );
-    }
+    stateNotifier.value = s.copyWith(
+      currentSentenceIndex: sentenceIndex,
+      currentWord: '',
+      activeWordStart: 0,
+      activeWordEnd: 0,
+    );
   }
 
   Future<void> _onAudioPlaybackComplete() async {
@@ -303,31 +260,7 @@ class AudioPlaybackService {
       print('>>> [Kawi TTS] Instant zero-gap transition to pre-buffered sentence index $nextIndex <<<');
 
       _isAudioPlaying = true;
-      _currentSentenceWords = pre.words;
-      if (pre.words.isNotEmpty) {
-        final first = pre.words.first;
-        stateNotifier.value = currentState.copyWith(
-          currentSentenceIndex: pre.sentenceIndex,
-          currentWord: first.word,
-          activeWordStart: first.start,
-          activeWordEnd: first.end,
-        );
-        _wordBoundaryController.add(
-          WordBoundaryEvent(
-            sentenceIndex: pre.sentenceIndex,
-            word: first.word,
-            start: first.start,
-            end: first.end,
-          ),
-        );
-      } else {
-        stateNotifier.value = currentState.copyWith(
-          currentSentenceIndex: pre.sentenceIndex,
-          currentWord: '',
-          activeWordStart: 0,
-          activeWordEnd: 0,
-        );
-      }
+      _setActiveSentence(pre.sentenceIndex);
 
       try {
         final filePath = await pre.filePathFuture;
@@ -418,7 +351,6 @@ class AudioPlaybackService {
   /// Stops playback on the main thread and instructs the isolate.
   void stop() {
     _isAudioPlaying = false;
-    _currentSentenceWords = const [];
     _prebufferedAudio = null;
     try {
       _audioPlayer.stop();
@@ -474,8 +406,6 @@ class AudioPlaybackService {
     _prebufferedAudio = null;
     _playerCompleteSubscription?.cancel();
     _playerCompleteSubscription = null;
-    _playerPositionSubscription?.cancel();
-    _playerPositionSubscription = null;
     try {
       _audioPlayer.stop();
       _audioPlayer.dispose();

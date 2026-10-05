@@ -24,6 +24,7 @@ class TtsIsolateWorker {
 
   int? _prebufferingIndex;
   int _prebufferGeneration = 0;
+  int _lastWordStart = -1;
   ({int index, Uint8List wavBytes, int durationMs, List<SentenceWord> words})?
       _prebufferedSentence;
 
@@ -193,6 +194,7 @@ class TtsIsolateWorker {
     _currentIndex = _sentences.isEmpty
         ? 0
         : startSentenceIndex.clamp(0, _sentences.length - 1);
+    _lastWordStart = -1;
 
     final currentSentenceText =
         _sentences.isNotEmpty ? _sentences[_currentIndex].text : '';
@@ -211,6 +213,7 @@ class TtsIsolateWorker {
   }
 
   Future<void> _play() async {
+    _lastWordStart = -1;
     if (_sentences.isEmpty) {
       // ignore: avoid_print
       print('[TTS Worker] Play aborted: sentences list is empty.');
@@ -401,6 +404,7 @@ class TtsIsolateWorker {
   }
 
   void _stop() {
+    _lastWordStart = -1;
     _prebufferGeneration++;
     _prebufferingIndex = null;
     _prebufferedSentence = null;
@@ -438,6 +442,7 @@ class TtsIsolateWorker {
   void _seekSentence(int index) {
     if (_sentences.isEmpty) return;
 
+    _lastWordStart = -1;
     _prebufferGeneration++;
     _prebufferingIndex = null;
     _prebufferedSentence = null;
@@ -463,6 +468,7 @@ class TtsIsolateWorker {
   void _onUtteranceCompleted({bool alreadyPlaying = false}) {
     if (_sentences.isEmpty) return;
 
+    _lastWordStart = -1;
     if (_currentIndex < _sentences.length - 1) {
       _currentIndex++;
       // ignore: avoid_print
@@ -526,13 +532,15 @@ class TtsIsolateWorker {
   }
 
   void _onUtteranceProgress(int start, int end, String word) {
-    _state = _state.copyWith(
-      currentWord: word,
-      activeWordStart: start,
-      activeWordEnd: end,
-    );
-    _emitState();
+    if (start < _lastWordStart) {
+      // Strictly monotonic: ignore backward jump during active utterance playback
+      return;
+    }
+    _lastWordStart = start;
 
+    // Highlighting is sentence-level only: word progress is forwarded as a raw
+    // event and deliberately does not touch [_state], so word ticks never
+    // trigger a TtsState emission (and therefore no UI rebuilds).
     _toMainPort.send(
       WordBoundaryEvent(
         sentenceIndex: _currentIndex,

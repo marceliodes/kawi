@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:path/path.dart' as p;
+
 import '../models/document_models.dart';
 import 'document_extractor.dart';
 import 'document_service.dart';
@@ -23,8 +25,8 @@ class EpubService implements DocumentService {
         throw StateError('EPUB file not found: $filePath');
       }
       final bytes = await file.readAsBytes();
-      final book = await EpubParser.parseBook(bytes);
-      return EpubParser.extractMetadata(book, includeCover: includeCover);
+      final bookRef = await EpubParser.openBook(bytes);
+      return EpubParser.extractMetadataFromRef(bookRef, includeCover: includeCover);
     });
   }
 
@@ -36,8 +38,8 @@ class EpubService implements DocumentService {
         throw StateError('EPUB file not found: $filePath');
       }
       final bytes = await file.readAsBytes();
-      final book = await EpubParser.parseBook(bytes);
-      return EpubParser.extractTableOfContents(book);
+      final bookRef = await EpubParser.openBook(bytes);
+      return EpubParser.extractTableOfContentsFromRef(bookRef);
     });
   }
 
@@ -52,15 +54,50 @@ class EpubService implements DocumentService {
         throw StateError('EPUB file not found: $filePath');
       }
       final bytes = await file.readAsBytes();
-      final book = await EpubParser.parseBook(bytes);
-      final chapters = book.Chapters ?? const [];
+      final bookRef = await EpubParser.openBook(bytes);
+      final chapters = await bookRef.getChapters();
       if (chapterIndex < 0 || chapterIndex >= chapters.length) {
         return const <DocumentNode>[];
       }
       final chapter = chapters[chapterIndex];
+      final html = await chapter.readHtmlContent();
+
+      // Lazy load only images referenced in this chapter's html
+      final imageRefs = bookRef.Content?.Images;
+      final imageBytesMap = <String, List<int>>{};
+      if (imageRefs != null && imageRefs.isNotEmpty) {
+        final lowerHtml = html.toLowerCase();
+        for (final entry in imageRefs.entries) {
+          final key = entry.key;
+          final filename = p.basename(key);
+          final decodedKey = Uri.decodeFull(key);
+          final decodedFilename = p.basename(decodedKey);
+
+          final isReferenced = lowerHtml.contains(key.toLowerCase()) ||
+              lowerHtml.contains(filename.toLowerCase()) ||
+              lowerHtml.contains(decodedKey.toLowerCase()) ||
+              lowerHtml.contains(decodedFilename.toLowerCase());
+
+          if (isReferenced) {
+            try {
+              final imgBytes = await entry.value.readContentAsBytes();
+              imageBytesMap[key] = imgBytes;
+              imageBytesMap[filename] = imgBytes;
+              if (decodedKey != key) {
+                imageBytesMap[decodedKey] = imgBytes;
+              }
+              if (decodedFilename != filename) {
+                imageBytesMap[decodedFilename] = imgBytes;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+
       return EpubParser.parseChapterHtml(
-        chapter.HtmlContent ?? '',
-        book.Content?.Images,
+        html,
+        null,
+        imageBytes: imageBytesMap,
       );
     });
   }

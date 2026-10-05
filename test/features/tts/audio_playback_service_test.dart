@@ -133,17 +133,26 @@ void main() {
 
       // Play
       service.play();
-      await Future<void>.delayed(const Duration(milliseconds: 40));
+      for (var i = 0; i < 20; i++) {
+        if (service.currentState.playbackState == TtsPlaybackState.playing) break;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       expect(service.currentState.playbackState, equals(TtsPlaybackState.playing));
 
       // Pause
       service.pause();
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      for (var i = 0; i < 20; i++) {
+        if (service.currentState.playbackState == TtsPlaybackState.paused) break;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       expect(service.currentState.playbackState, equals(TtsPlaybackState.paused));
 
       // Stop
       service.stop();
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      for (var i = 0; i < 20; i++) {
+        if (service.currentState.playbackState == TtsPlaybackState.stopped) break;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       expect(service.currentState.playbackState, equals(TtsPlaybackState.stopped));
     });
 
@@ -158,17 +167,26 @@ void main() {
 
       const text = 'Part 1. Part 2. Part 3.';
       service.loadText(text);
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      for (var i = 0; i < 20; i++) {
+        if (service.currentState.totalSentences == 3) break;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
 
       // Next
       service.nextSentence();
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      for (var i = 0; i < 20; i++) {
+        if (service.currentState.currentSentenceIndex == 1) break;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       expect(service.currentState.currentSentenceIndex, equals(1));
       expect(service.currentState.currentSentenceText, equals('Part 2.'));
 
       // Previous
       service.previousSentence();
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      for (var i = 0; i < 20; i++) {
+        if (service.currentState.currentSentenceIndex == 0) break;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       expect(service.currentState.currentSentenceIndex, equals(0));
       expect(service.currentState.currentSentenceText, equals('Part 1.'));
     });
@@ -227,7 +245,7 @@ void main() {
       expect(fakePlayer.isPlaying, isTrue);
     });
 
-    test('onPositionChanged advances word highlights strictly in response to audio playback events', () async {
+    test('playWavBytes tracks sentence playback without per-word state fragmentation', () async {
       final sampleWav = encodeWav(samples: [0.0, 0.1, -0.1], sampleRate: 24000);
       const words = [
         SentenceWord(word: 'Hello', start: 0, end: 5, endMs: 200),
@@ -236,22 +254,17 @@ void main() {
 
       await service.playWavBytes(
         sampleWav,
+        sentenceIndex: 1,
         durationMs: 400,
         words: words,
       );
 
-      // Initial word highlighted immediately
-      expect(service.currentState.currentWord, equals('Hello'));
+      // Active sentence is tracked cleanly
+      expect(service.currentState.currentSentenceIndex, equals(1));
+      // Word fragmentation is removed to prevent UI micro-jitter
+      expect(service.currentState.currentWord, isEmpty);
       expect(service.currentState.activeWordStart, equals(0));
-      expect(service.currentState.activeWordEnd, equals(5));
-
-      // Advance position to 250ms -> moves to "world"
-      fakePlayer.emitPosition(const Duration(milliseconds: 250));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-
-      expect(service.currentState.currentWord, equals('world'));
-      expect(service.currentState.activeWordStart, equals(6));
-      expect(service.currentState.activeWordEnd, equals(11));
+      expect(service.currentState.activeWordEnd, equals(0));
     });
 
     test('1-sentence lookahead pre-buffers next sentence and triggers zero-gap transition', () async {
@@ -267,7 +280,10 @@ void main() {
 
       service.play();
       // Wait for sentence 0 synthesis & playback to start, and sentence 1 pre-buffering to complete
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+      for (var i = 0; i < 30; i++) {
+        if (service.hasPrebufferedAudio && fakePlayer.isPlaying) break;
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      }
 
       expect(fakePlayer.isPlaying, isTrue);
       expect(service.currentState.currentSentenceIndex, equals(0));
@@ -277,7 +293,10 @@ void main() {
 
       // Trigger audio player completion on sentence 0
       fakePlayer.triggerComplete();
-      await Future<void>.delayed(const Duration(milliseconds: 60));
+      for (var i = 0; i < 30; i++) {
+        if (service.currentState.currentSentenceIndex == 1) break;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
 
       // Immediate zero-gap transition to sentence 1
       expect(fakePlayer.isPlaying, isTrue);

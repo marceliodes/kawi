@@ -16,6 +16,46 @@ import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/services/tts_text_normalizer.dart';
 
+class _ContinuousChapterSection {
+  final int chapterIndex;
+  final List<DocumentNode> nodes;
+  const _ContinuousChapterSection(this.chapterIndex, this.nodes);
+}
+
+sealed class _ContinuousListItem {}
+
+class _PrevChapterItem extends _ContinuousListItem {
+  final int prevChapterIndex;
+  _PrevChapterItem(this.prevChapterIndex);
+}
+
+class _ChapterHeaderItem extends _ContinuousListItem {
+  final int chapterIndex;
+  _ChapterHeaderItem(this.chapterIndex);
+}
+
+class _NodeItem extends _ContinuousListItem {
+  final int chapterIndex;
+  final int nodeIndex;
+  final DocumentNode node;
+  _NodeItem({
+    required this.chapterIndex,
+    required this.nodeIndex,
+    required this.node,
+  });
+}
+
+class _NextChapterItem extends _ContinuousListItem {
+  final int currentChapterIndex;
+  final int? nextChapterIndex;
+  final bool hasPrevious;
+  _NextChapterItem({
+    required this.currentChapterIndex,
+    required this.nextChapterIndex,
+    required this.hasPrevious,
+  });
+}
+
 class ReaderCanvas extends ConsumerStatefulWidget {
   const ReaderCanvas({
     super.key,
@@ -74,14 +114,15 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   ItemPositionsListener? _internalItemPositionsListener;
 
   bool get _isEpub =>
-      widget.isEpub ??
-      (widget.filePath.toLowerCase().endsWith('.epub') &&
-          File(widget.filePath).existsSync());
+      widget.isEpub == true || widget.filePath.toLowerCase().endsWith('.epub');
 
   int _currentChapterIndex = 0;
   int _currentPageIndexInChapter = 0;
   List<PageChunk> _currentChapterPages = const [];
   PaginationParams? _lastPaginationParams;
+  List<_ContinuousChapterSection> _continuousSections = [];
+  bool _isLoadingNextChapter = false;
+  bool _isLoadingPreviousChapter = false;
 
   ItemScrollController get _effectiveItemScrollController =>
       widget.itemScrollController ??
@@ -100,6 +141,11 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           widget.pageCount > 0 ? widget.pageCount - 1 : 0,
         );
     _currentPageIndexInChapter = widget.pageIndexInChapter ?? 0;
+    if (widget.epubNodes != null) {
+      _continuousSections = [
+        _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
+      ];
+    }
 
     _effectiveItemPositionsListener.itemPositions.addListener(
       _onPositionsChanged,
@@ -118,10 +164,23 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       newListener?.itemPositions.addListener(_onPositionsChanged);
     }
 
-    if (widget.chapterIndex != null &&
+    if (widget.epubNodes != null && widget.epubNodes != oldWidget.epubNodes) {
+      _continuousSections = [
+        _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
+      ];
+    } else if (widget.chapterIndex != null &&
         widget.chapterIndex != _currentChapterIndex) {
-      _currentChapterIndex = widget.chapterIndex!;
+      final newIndex = widget.chapterIndex!;
+      _currentChapterIndex = newIndex;
       _currentPageIndexInChapter = widget.pageIndexInChapter ?? 0;
+      if (!_continuousSections.any((s) => s.chapterIndex == newIndex)) {
+        _continuousSections = [];
+        if (widget.epubNodes != null) {
+          _continuousSections = [
+            _ContinuousChapterSection(newIndex, widget.epubNodes!),
+          ];
+        }
+      }
     } else if (widget.pageIndexInChapter != null &&
         widget.pageIndexInChapter != _currentPageIndexInChapter) {
       _currentPageIndexInChapter = widget.pageIndexInChapter!;
@@ -131,6 +190,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         widget.pageCount > 0 ? widget.pageCount - 1 : 0,
       );
       _currentPageIndexInChapter = 0;
+      _continuousSections = [];
       if (widget.pageController.hasClients) {
         widget.pageController.jumpToPage(0);
       }
@@ -321,15 +381,14 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     }
 
     // Handle split sentence between currentIdx and currentIdx + 1:
-    // If the next page contains the active spoken word and current page does not,
-    // advance to next page.
+    // If the next page contains the active sentence or its continuation, advance to it.
     final nextIdx = currentIdx + 1;
     if (nextIdx < pages.length) {
       final nextPage = pages[nextIdx];
-      final currentWord = ttsState.currentWord.trim().toLowerCase();
-      if (currentWord.isNotEmpty &&
-          nextPage.plainText.toLowerCase().contains(currentWord) &&
-          !lowerCurrentPage.contains(currentWord)) {
+      final lowerNextPage = nextPage.plainText.toLowerCase().trim();
+      if (lowerNextPage.isNotEmpty &&
+          (lowerSentence.contains(lowerNextPage) || lowerNextPage.contains(lowerSentence)) &&
+          !lowerCurrentPage.contains(lowerSentence)) {
         if (widget.pageController.hasClients &&
             widget.pageController.page?.round() != nextIdx) {
           widget.pageController.animateToPage(
@@ -346,6 +405,13 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   Widget build(BuildContext context) {
     final theme = ReaderTheme.of(context);
     final isPaginated = widget.settings.isPaginated;
+
+    // Auto-turn check on TTS progress in paginated mode without full rebuild
+    ref.listen<TtsState>(ttsStateProvider, (previous, next) {
+      if (next.isPlaying && widget.settings.isPaginated) {
+        _checkAutoPageTurn(_currentChapterPages, next);
+      }
+    });
 
     return Focus(
       focusNode: _focusNode,
@@ -389,6 +455,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                       : _buildEpubContinuousView(
                           theme,
                           columnWidth,
+                          columnHeight,
                           widget.settings.horizontalPadding,
                         );
                 },
@@ -435,24 +502,36 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
     final pagesAsync = ref.watch(chapterPagesProvider(params));
 
-    return pagesAsync.when(
-      loading: () => Center(
-        child: CircularProgressIndicator(color: theme.accent),
-      ),
-      error: (err, _) => Center(
-        child: Text(
-          'Error paginating chapter: $err',
-          style: AppTypography.body.copyWith(color: theme.textMuted),
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 150),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeOut,
+      transitionBuilder: (child, animation) =>
+          FadeTransition(opacity: animation, child: child),
+      child: pagesAsync.when(
+        loading: () => Center(
+          key: const ValueKey('paginated_loading'),
+          child: CircularProgressIndicator(color: theme.accent),
         ),
-      ),
-      data: (pages) => _buildEpubPagesStack(
-        theme,
-        pages,
-        columnWidth,
-        columnHeight,
-        horizontalPadding,
-        textStyle,
-        params: params,
+        error: (err, _) => Center(
+          key: const ValueKey('paginated_error'),
+          child: Text(
+            'Error paginating chapter: $err',
+            style: AppTypography.body.copyWith(color: theme.textMuted),
+          ),
+        ),
+        data: (pages) => KeyedSubtree(
+          key: ValueKey('paginated_pages_${_currentChapterIndex}_${pages.length}'),
+          child: _buildEpubPagesStack(
+            theme,
+            pages,
+            columnWidth,
+            columnHeight,
+            horizontalPadding,
+            textStyle,
+            params: params,
+          ),
+        ),
       ),
     );
   }
@@ -486,14 +565,6 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       _lastPaginationParams = params;
     }
 
-    // Auto-turn check on TTS progress
-    final ttsState = ref.watch(ttsStateProvider);
-    if (ttsState.isPlaying) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _checkAutoPageTurn(pages, ttsState);
-      });
-    }
-
     final effectivePageCount = pages.isNotEmpty ? pages.length : 1;
 
     return Stack(
@@ -520,6 +591,19 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
             }
             final chunk = pages[pageIndex];
 
+            if (chunk.nodes.length == 1 && chunk.nodes.first is ImageNode) {
+              return LayoutBuilder(
+                builder: (context, constraints) => Center(
+                  child: Image.memory(
+                    (chunk.nodes.first as ImageNode).bytes,
+                    fit: BoxFit.contain,
+                    width: constraints.maxWidth,
+                    height: constraints.maxHeight,
+                  ),
+                ),
+              );
+            }
+
             return Center(
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: columnWidth),
@@ -529,7 +613,6 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                     vertical: Spacing.xl + 40.0,
                   ),
                   child: SingleChildScrollView(
-                    physics: const NeverScrollableScrollPhysics(),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -563,7 +646,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                               node,
                               textStyle,
                               theme,
-                              ttsState,
+                              viewportHeight: columnHeight,
                             ),
                           ),
                       ],
@@ -622,16 +705,114 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     );
   }
 
+  Future<void> _loadNextChapter() async {
+    if (_isLoadingNextChapter) return;
+    final lastChapter = _continuousSections.isNotEmpty
+        ? _continuousSections.last.chapterIndex
+        : _currentChapterIndex;
+    if (lastChapter >= widget.pageCount - 1) return;
+
+    setState(() {
+      _isLoadingNextChapter = true;
+    });
+
+    try {
+      final nextNodes = await ref.read(
+        documentChapterNodesProvider((
+          filePath: widget.filePath,
+          chapterIndex: lastChapter + 1,
+        )).future,
+      );
+      if (!mounted) return;
+      if (nextNodes.isNotEmpty) {
+        setState(() {
+          _continuousSections = [
+            ..._continuousSections,
+            _ContinuousChapterSection(lastChapter + 1, nextNodes),
+          ];
+          _isLoadingNextChapter = false;
+        });
+      } else {
+        setState(() {
+          _isLoadingNextChapter = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoadingNextChapter = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadPreviousChapter() async {
+    if (_isLoadingPreviousChapter) return;
+    final firstChapter = _continuousSections.isNotEmpty
+        ? _continuousSections.first.chapterIndex
+        : _currentChapterIndex;
+    if (firstChapter <= 0) return;
+
+    setState(() {
+      _isLoadingPreviousChapter = true;
+    });
+
+    try {
+      final prevNodes = await ref.read(
+        documentChapterNodesProvider((
+          filePath: widget.filePath,
+          chapterIndex: firstChapter - 1,
+        )).future,
+      );
+      if (!mounted) return;
+      if (prevNodes.isNotEmpty) {
+        setState(() {
+          _continuousSections = [
+            _ContinuousChapterSection(firstChapter - 1, prevNodes),
+            ..._continuousSections,
+          ];
+          _isLoadingPreviousChapter = false;
+        });
+      } else {
+        setState(() {
+          _isLoadingPreviousChapter = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoadingPreviousChapter = false;
+        });
+      }
+    }
+  }
+
   Widget _buildEpubContinuousView(
     ReaderThemeData theme,
     double columnWidth,
+    double columnHeight,
     double horizontalPadding,
   ) {
     if (widget.epubNodes != null) {
+      if (!_continuousSections
+          .any((s) => s.chapterIndex == _currentChapterIndex)) {
+        _continuousSections = [
+          _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
+        ];
+      }
       return _buildEpubListView(
         theme,
-        widget.epubNodes!,
         columnWidth,
+        columnHeight,
+        horizontalPadding,
+      );
+    }
+
+    if (_continuousSections.isNotEmpty) {
+      return _buildEpubListView(
+        theme,
+        columnWidth,
+        columnHeight,
         horizontalPadding,
       );
     }
@@ -643,32 +824,51 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       )),
     );
 
-    return chapterNodesAsync.when(
-      loading: () => Center(
-        child: CircularProgressIndicator(color: theme.accent),
-      ),
-      error: (err, _) => Center(
-        child: Text(
-          'Error loading chapter: $err',
-          style: AppTypography.body.copyWith(color: theme.textMuted),
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 150),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeOut,
+      transitionBuilder: (child, animation) =>
+          FadeTransition(opacity: animation, child: child),
+      child: chapterNodesAsync.when(
+        loading: () => Center(
+          key: const ValueKey('continuous_loading'),
+          child: CircularProgressIndicator(color: theme.accent),
         ),
-      ),
-      data: (nodes) => _buildEpubListView(
-        theme,
-        nodes,
-        columnWidth,
-        horizontalPadding,
+        error: (err, _) => Center(
+          key: const ValueKey('continuous_error'),
+          child: Text(
+            'Error loading chapter: $err',
+            style: AppTypography.body.copyWith(color: theme.textMuted),
+          ),
+        ),
+        data: (nodes) {
+          if (!_continuousSections
+              .any((s) => s.chapterIndex == _currentChapterIndex)) {
+            _continuousSections = [
+              _ContinuousChapterSection(_currentChapterIndex, nodes),
+            ];
+          }
+          return KeyedSubtree(
+            key: ValueKey('continuous_list_${widget.filePath}'),
+            child: _buildEpubListView(
+              theme,
+              columnWidth,
+              columnHeight,
+              horizontalPadding,
+            ),
+          );
+        },
       ),
     );
   }
 
   Widget _buildEpubListView(
     ReaderThemeData theme,
-    List<DocumentNode> nodes,
     double columnWidth,
+    double columnHeight,
     double horizontalPadding,
   ) {
-    final ttsState = ref.watch(ttsStateProvider);
     final baseStyle = TextStyle(
       fontFamily: widget.settings.fontFamily,
       fontSize: widget.settings.fontSize,
@@ -676,296 +876,205 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       color: theme.textPrimary,
     );
 
-    return ListView.builder(
-      padding: EdgeInsets.symmetric(
-        horizontal: horizontalPadding,
-        vertical: Spacing.xl + 40.0,
-      ),
-      itemCount: nodes.length + 1,
-      itemBuilder: (context, index) {
-        if (index == nodes.length) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: Spacing.xl),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (_currentChapterIndex > 0)
-                  TextButton.icon(
-                    onPressed: () {
-                      if (widget.onPreviousChapter != null) {
-                        widget.onPreviousChapter!();
-                      } else {
-                        setState(() {
-                          _currentChapterIndex--;
-                        });
-                        widget.onPageChanged(_currentChapterIndex, 0.0);
-                        widget.onEpubPageChanged?.call(_currentChapterIndex, 0);
-                      }
-                    },
-                    icon: const PhosphorIcon(
-                      PhosphorIconsLight.arrowLeft,
-                      size: 18,
-                    ),
-                    label: const Text('Previous Chapter'),
-                  ),
-                const SizedBox(width: Spacing.md),
-                if (_currentChapterIndex < widget.pageCount - 1)
-                  TextButton.icon(
-                    onPressed: () {
-                      if (widget.onNextChapter != null) {
-                        widget.onNextChapter!();
-                      } else {
-                        setState(() {
-                          _currentChapterIndex++;
-                        });
-                        widget.onPageChanged(_currentChapterIndex, 0.0);
-                        widget.onEpubPageChanged?.call(_currentChapterIndex, 0);
-                      }
-                    },
-                    icon: const PhosphorIcon(
-                      PhosphorIconsLight.arrowRight,
-                      size: 18,
-                    ),
-                    label: const Text('Next Chapter'),
-                  ),
-              ],
-            ),
-          );
-        }
+    final sections = _continuousSections;
+    if (sections.isEmpty) {
+      return const SizedBox.shrink();
+    }
 
-        final node = nodes[index];
-        return Center(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: columnWidth),
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 16.0),
-              child: _buildNodeWidget(node, baseStyle, theme, ttsState),
-            ),
-          ),
-        );
+    final items = <_ContinuousListItem>[];
+    final firstChapter = sections.first.chapterIndex;
+    final lastChapter = sections.last.chapterIndex;
+
+    if (firstChapter > 0) {
+      items.add(_PrevChapterItem(firstChapter - 1));
+    }
+
+    for (var sIdx = 0; sIdx < sections.length; sIdx++) {
+      final section = sections[sIdx];
+      if (sIdx > 0 || firstChapter > 0) {
+        items.add(_ChapterHeaderItem(section.chapterIndex));
+      }
+      for (var nIdx = 0; nIdx < section.nodes.length; nIdx++) {
+        items.add(_NodeItem(
+          chapterIndex: section.chapterIndex,
+          nodeIndex: nIdx,
+          node: section.nodes[nIdx],
+        ));
+      }
+    }
+
+    items.add(_NextChapterItem(
+      currentChapterIndex: lastChapter,
+      nextChapterIndex:
+          lastChapter < widget.pageCount - 1 ? lastChapter + 1 : null,
+      hasPrevious: firstChapter > 0,
+    ));
+
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (notification is ScrollUpdateNotification ||
+            notification is OverscrollNotification) {
+          final metrics = notification.metrics;
+          // Auto load next chapter when approaching bottom edge
+          if (metrics.pixels >= metrics.maxScrollExtent - 300 &&
+              !_isLoadingNextChapter) {
+            _loadNextChapter();
+          }
+          // Auto load previous chapter when at top edge
+          if (metrics.pixels <= metrics.minScrollExtent + 50 &&
+              !_isLoadingPreviousChapter) {
+            _loadPreviousChapter();
+          }
+        }
+        return false;
       },
+      child: ListView.builder(
+        controller: widget.scrollController,
+        padding: EdgeInsets.symmetric(
+          horizontal: horizontalPadding,
+          vertical: Spacing.xl + 40.0,
+        ),
+        itemCount: items.length,
+        itemBuilder: (context, index) {
+          final item = items[index];
+
+          if (item is _PrevChapterItem) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: Spacing.xl),
+              child: Center(
+                child: _isLoadingPreviousChapter
+                    ? SizedBox(
+                        height: 24,
+                        width: 24,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: theme.accent,
+                        ),
+                      )
+                    : TextButton.icon(
+                        onPressed: () {
+                          if (widget.onPreviousChapter != null) {
+                            widget.onPreviousChapter!();
+                          } else {
+                            _loadPreviousChapter();
+                          }
+                        },
+                        icon: const PhosphorIcon(
+                          PhosphorIconsLight.arrowLeft,
+                          size: 18,
+                        ),
+                        label: const Text('Previous Chapter'),
+                      ),
+              ),
+            );
+          }
+
+          if (item is _ChapterHeaderItem) {
+            return _ChapterHeaderWidget(
+              filePath: widget.filePath,
+              chapterIndex: item.chapterIndex,
+              columnWidth: columnWidth,
+              theme: theme,
+            );
+          }
+
+          if (item is _NodeItem) {
+            return Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: columnWidth),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 16.0),
+                  child: _buildNodeWidget(
+                    item.node,
+                    baseStyle,
+                    theme,
+                    viewportHeight: columnHeight,
+                  ),
+                ),
+              ),
+            );
+          }
+
+          if (item is _NextChapterItem) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: Spacing.xl),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_isLoadingNextChapter)
+                    Padding(
+                      padding: const EdgeInsets.all(Spacing.md),
+                      child: SizedBox(
+                        height: 24,
+                        width: 24,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: theme.accent,
+                        ),
+                      ),
+                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (item.hasPrevious)
+                        TextButton.icon(
+                          onPressed: () {
+                            if (widget.onPreviousChapter != null) {
+                              widget.onPreviousChapter!();
+                            } else {
+                              _loadPreviousChapter();
+                            }
+                          },
+                          icon: const PhosphorIcon(
+                            PhosphorIconsLight.arrowLeft,
+                            size: 18,
+                          ),
+                          label: const Text('Previous Chapter'),
+                        ),
+                      if (item.hasPrevious && item.nextChapterIndex != null)
+                        const SizedBox(width: Spacing.md),
+                      if (item.nextChapterIndex != null)
+                        TextButton.icon(
+                          onPressed: () {
+                            if (widget.onNextChapter != null) {
+                              widget.onNextChapter!();
+                            } else {
+                              _loadNextChapter();
+                            }
+                          },
+                          icon: const PhosphorIcon(
+                            PhosphorIconsLight.arrowRight,
+                            size: 18,
+                          ),
+                          label: const Text('Next Chapter'),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return const SizedBox.shrink();
+        },
+      ),
     );
   }
 
   Widget _buildNodeWidget(
     DocumentNode node,
     TextStyle baseStyle,
-    ReaderThemeData theme,
-    TtsState ttsState,
-  ) {
-    if (node is ImageNode) {
-      return Center(
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.memory(
-            node.bytes,
-            fit: BoxFit.contain,
-            semanticLabel: node.altText,
-          ),
-        ),
-      );
-    }
-
-    if (node is HeadingNode) {
-      final scale = (1.6 - (node.level * 0.1)).clamp(1.15, 1.6);
-      final headingStyle = baseStyle.copyWith(
-        fontSize: (baseStyle.fontSize ?? 16.0) * scale,
-        fontWeight: FontWeight.bold,
-      );
-      return SelectableText.rich(
-        _buildHighlightedNodeSpan(
-          node: node,
-          baseStyle: headingStyle,
-          theme: theme,
-          ttsState: ttsState,
-        ),
-        textAlign: TextAlign.start,
-        contextMenuBuilder: (context, editableTextState) {
-          return _buildContextMenu(context, editableTextState, theme);
-        },
-      );
-    }
-
-    if (node is ParagraphNode) {
-      return SelectableText.rich(
-        _buildHighlightedNodeSpan(
-          node: node,
-          baseStyle: baseStyle,
-          theme: theme,
-          ttsState: ttsState,
-        ),
-        textAlign: TextAlign.start,
-        contextMenuBuilder: (context, editableTextState) {
-          return _buildContextMenu(context, editableTextState, theme);
-        },
-      );
-    }
-
-    return const SizedBox.shrink();
-  }
-
-  TextSpan _buildHighlightedNodeSpan({
-    required DocumentNode node,
-    required TextStyle baseStyle,
-    required ReaderThemeData theme,
-    required TtsState ttsState,
+    ReaderThemeData theme, {
+    double? viewportHeight,
   }) {
-    final List<TextSegment> segments = node is ParagraphNode
-        ? node.segments
-        : (node as HeadingNode).segments;
-
-    final plainText = node is ParagraphNode
-        ? node.plainText
-        : (node as HeadingNode).plainText;
-
-    final isTtsActive =
-        (ttsState.isPlaying || ttsState.isPaused) &&
-        ttsState.currentSentenceText.trim().isNotEmpty;
-
-    final currentSentence = ttsState.currentSentenceText.trim();
-    final lowerPlain = plainText.toLowerCase();
-    final lowerSentence = currentSentence.toLowerCase();
-
-    int matchIndex = -1;
-    int matchEnd = -1;
-
-    if (lowerPlain.contains(lowerSentence)) {
-      matchIndex = lowerPlain.indexOf(lowerSentence);
-      matchEnd = matchIndex + currentSentence.length;
-    } else if (lowerPlain.trim().isNotEmpty &&
-        lowerSentence.contains(lowerPlain.trim())) {
-      matchIndex = 0;
-      matchEnd = plainText.length;
-    } else {
-      final minLen = currentSentence.length < plainText.length
-          ? currentSentence.length
-          : plainText.length;
-      for (var len = minLen; len >= 8; len--) {
-        final prefix = lowerSentence.substring(0, len).trim();
-        if (prefix.isNotEmpty && lowerPlain.endsWith(prefix)) {
-          matchIndex = lowerPlain.lastIndexOf(prefix);
-          matchEnd = plainText.length;
-          break;
-        }
-      }
-      if (matchIndex < 0) {
-        for (var len = minLen; len >= 8; len--) {
-          final suffix =
-              lowerSentence.substring(lowerSentence.length - len).trim();
-          if (suffix.isNotEmpty && lowerPlain.startsWith(suffix)) {
-            matchIndex = 0;
-            matchEnd = suffix.length;
-            break;
-          }
-        }
-      }
-    }
-
-    if (!isTtsActive || currentSentence.isEmpty || matchIndex < 0) {
-      return TextSpan(
-        style: baseStyle,
-        children: [
-          for (final s in segments)
-            TextSpan(
-              text: s.text,
-              style: TextStyle(
-                fontWeight: s.isBold ? FontWeight.bold : null,
-                fontStyle: s.isItalic ? FontStyle.italic : null,
-              ),
-            ),
-        ],
-      );
-    }
-
-    final sentenceHighlightStyle = baseStyle.copyWith(
-      backgroundColor: theme.ttsHighlight,
-    );
-
-    final children = <InlineSpan>[];
-    var charAccumulator = 0;
-
-    for (final seg in segments) {
-      final segStart = charAccumulator;
-      final segEnd = charAccumulator + seg.text.length;
-      charAccumulator = segEnd;
-
-      final segStyle = TextStyle(
-        fontWeight: seg.isBold ? FontWeight.bold : null,
-        fontStyle: seg.isItalic ? FontStyle.italic : null,
-      );
-
-      if (segEnd <= matchIndex || segStart >= matchEnd) {
-        children.add(TextSpan(text: seg.text, style: segStyle));
-        continue;
-      }
-
-      final overlapStart = (matchIndex - segStart).clamp(0, seg.text.length);
-      final overlapEnd = (matchEnd - segStart).clamp(0, seg.text.length);
-
-      final before = seg.text.substring(0, overlapStart);
-      final highlighted = seg.text.substring(overlapStart, overlapEnd);
-      final after = seg.text.substring(overlapEnd);
-
-      if (before.isNotEmpty) {
-        children.add(TextSpan(text: before, style: segStyle));
-      }
-      if (highlighted.isNotEmpty) {
-        int wordStartInSeg = -1;
-        int wordEndInSeg = -1;
-
-        if (ttsState.currentWord.trim().isNotEmpty) {
-          final cleanWord = ttsState.currentWord.trim();
-          final wordRegex = RegExp(
-            r'\b' + RegExp.escape(cleanWord) + r'\b',
-            caseSensitive: false,
-          );
-          final m = wordRegex.firstMatch(highlighted) ??
-              RegExp(RegExp.escape(cleanWord), caseSensitive: false)
-                  .firstMatch(highlighted);
-          if (m != null) {
-            wordStartInSeg = m.start;
-            wordEndInSeg = m.end;
-          }
-        }
-
-        if (wordStartInSeg >= 0 && wordEndInSeg > wordStartInSeg) {
-          final wBefore = highlighted.substring(0, wordStartInSeg);
-          final wWord = highlighted.substring(wordStartInSeg, wordEndInSeg);
-          final wAfter = highlighted.substring(wordEndInSeg);
-
-          children.add(
-            TextSpan(
-              style: segStyle.merge(sentenceHighlightStyle),
-              children: [
-                if (wBefore.isNotEmpty) TextSpan(text: wBefore),
-                TextSpan(
-                  text: wWord,
-                  style: sentenceHighlightStyle.copyWith(
-                    backgroundColor: theme.accent.withValues(alpha: 0.38),
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (wAfter.isNotEmpty) TextSpan(text: wAfter),
-              ],
-            ),
-          );
-        } else {
-          children.add(
-            TextSpan(
-              text: highlighted,
-              style: segStyle.merge(sentenceHighlightStyle),
-            ),
-          );
-        }
-      }
-      if (after.isNotEmpty) {
-        children.add(TextSpan(text: after, style: segStyle));
-      }
-    }
-
-    return TextSpan(
-      style: baseStyle,
-      children: children,
+    return _EpubScopedNodeWidget(
+      node: node,
+      baseStyle: baseStyle,
+      theme: theme,
+      viewportHeight: viewportHeight,
+      contextMenuBuilder: (context, editableTextState) {
+        return _buildContextMenu(context, editableTextState, theme);
+      },
     );
   }
 
@@ -1323,58 +1432,9 @@ class _PageContentWidget extends ConsumerWidget {
 
         if (isMatch) {
           hasHighlighted = true;
-
-          int wordStart = ttsState.activeWordStart;
-          int wordEnd = ttsState.activeWordEnd;
-          bool validOffsets = ttsState.currentWord.isNotEmpty &&
-              wordStart >= 0 &&
-              wordEnd <= sentence.length &&
-              wordStart < wordEnd &&
-              sentence.substring(wordStart, wordEnd).toLowerCase().contains(
-                    ttsState.currentWord
-                        .toLowerCase()
-                        .replaceAll(RegExp(r'[^a-zA-Z0-9]'), ''),
-                  );
-
-          if (!validOffsets && ttsState.currentWord.trim().isNotEmpty) {
-            final cleanWord = RegExp.escape(ttsState.currentWord.trim());
-            final wordRegex =
-                RegExp(r'\b' + cleanWord + r'\b', caseSensitive: false);
-            final wordMatch = wordRegex.firstMatch(sentence) ??
-                RegExp(cleanWord, caseSensitive: false).firstMatch(sentence);
-            if (wordMatch != null) {
-              wordStart = wordMatch.start;
-              wordEnd = wordMatch.end;
-              validOffsets = true;
-            }
-          }
-
-          if (validOffsets) {
-            final wBefore = sentence.substring(0, wordStart);
-            final wWord = sentence.substring(wordStart, wordEnd);
-            final wAfter = sentence.substring(wordEnd);
-
-            children.add(
-              TextSpan(
-                style: sentenceHighlightStyle,
-                children: [
-                  if (wBefore.isNotEmpty) TextSpan(text: wBefore),
-                  TextSpan(
-                    text: wWord,
-                    style: sentenceHighlightStyle.copyWith(
-                      backgroundColor: theme.accent.withValues(alpha: 0.38),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  if (wAfter.isNotEmpty) TextSpan(text: wAfter),
-                ],
-              ),
-            );
-          } else {
-            children.add(
-              TextSpan(text: sentence, style: sentenceHighlightStyle),
-            );
-          }
+          children.add(
+            TextSpan(text: sentence, style: sentenceHighlightStyle),
+          );
         } else {
           children.add(TextSpan(text: sentence, style: baseStyle));
         }
@@ -1450,4 +1510,209 @@ class _PageContentWidget extends ConsumerWidget {
       }
     } catch (_) {}
   }
+}
+
+class _ChapterHeaderWidget extends ConsumerWidget {
+  final String filePath;
+  final int chapterIndex;
+  final double columnWidth;
+  final ReaderThemeData theme;
+
+  const _ChapterHeaderWidget({
+    required this.filePath,
+    required this.chapterIndex,
+    required this.columnWidth,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final titleAsync = ref.watch(documentChapterTitleProvider((
+      filePath: filePath,
+      chapterIndex: chapterIndex,
+    )));
+
+    final title = titleAsync.asData?.value;
+    final String label;
+    if (title != null && title.isNotEmpty) {
+      if (title.toLowerCase().startsWith('chapter')) {
+        label = title;
+      } else {
+        label = 'Chapter ${chapterIndex + 1}: $title';
+      }
+    } else {
+      label = 'Chapter ${chapterIndex + 1}';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: Spacing.xl),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: columnWidth),
+          child: Row(
+            children: [
+              const Expanded(child: Divider()),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: Spacing.md),
+                child: Text(
+                  label,
+                  style: AppTypography.micro.copyWith(
+                    color: theme.textMuted,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ),
+              const Expanded(child: Divider()),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+extension DocumentNodePlainTextX on DocumentNode {
+  String toPlainText() {
+    if (this is ParagraphNode) return (this as ParagraphNode).plainText;
+    if (this is HeadingNode) return (this as HeadingNode).plainText;
+    return '';
+  }
+}
+
+List<InlineSpan> _buildDefaultSpans(DocumentNode node, TextStyle textStyle) {
+  final List<TextSegment> segments = node is ParagraphNode
+      ? node.segments
+      : (node is HeadingNode ? node.segments : const []);
+  return [
+    for (final s in segments)
+      TextSpan(
+        text: s.text,
+        style: textStyle.copyWith(
+          fontWeight: s.isBold ? FontWeight.bold : null,
+          fontStyle: s.isItalic ? FontStyle.italic : null,
+        ),
+      ),
+  ];
+}
+
+class _EpubScopedNodeWidget extends ConsumerWidget {
+  final DocumentNode node;
+  final TextStyle baseStyle;
+  final ReaderThemeData theme;
+  final double? viewportHeight;
+  final Widget Function(BuildContext, EditableTextState)? contextMenuBuilder;
+
+  const _EpubScopedNodeWidget({
+    required this.node,
+    required this.baseStyle,
+    required this.theme,
+    this.viewportHeight,
+    this.contextMenuBuilder,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (node is ImageNode) {
+      final img = node as ImageNode;
+      Widget imageWidget = Image.memory(
+        img.bytes,
+        fit: BoxFit.contain,
+        semanticLabel: img.altText,
+      );
+
+      if (viewportHeight != null) {
+        imageWidget = ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: viewportHeight!),
+          child: imageWidget,
+        );
+      }
+
+      return Center(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: imageWidget,
+        ),
+      );
+    }
+
+    final paragraphText = node.toPlainText();
+
+    final isMatched = ref.watch(
+      ttsStateProvider.select((s) {
+        if (!s.isPlaying && !s.isPaused) return false;
+        final sentence = s.currentSentenceText;
+        return sentence.isNotEmpty &&
+            (paragraphText.contains(sentence) ||
+                paragraphText.contains(sentence.trim()));
+      }),
+    );
+
+    TextStyle effectiveStyle = baseStyle;
+    if (node is HeadingNode) {
+      final scale =
+          (1.6 - ((node as HeadingNode).level * 0.1)).clamp(1.15, 1.6);
+      effectiveStyle = baseStyle.copyWith(
+        fontSize: (baseStyle.fontSize ?? 16.0) * scale,
+        fontWeight: FontWeight.bold,
+      );
+    }
+
+    if (!isMatched) {
+      return SelectableText.rich(
+        TextSpan(children: _buildDefaultSpans(node, effectiveStyle)),
+        textAlign: TextAlign.start,
+        contextMenuBuilder: contextMenuBuilder,
+      );
+    }
+
+    final ttsState = ref.watch(ttsStateProvider);
+
+    return SelectableText.rich(
+      _buildHighlightedNodeSpan(
+        node: node,
+        textStyle: effectiveStyle,
+        theme: theme,
+        ttsState: ttsState,
+      ),
+      textAlign: TextAlign.start,
+      contextMenuBuilder: contextMenuBuilder,
+    );
+  }
+}
+
+TextSpan _buildHighlightedNodeSpan({
+  required DocumentNode node,
+  required TextStyle textStyle,
+  required ReaderThemeData theme,
+  required TtsState ttsState,
+}) {
+  final paragraphText = node.toPlainText();
+  final activeSentenceText = ttsState.currentSentenceText;
+
+  var targetSentence = activeSentenceText;
+  if (!paragraphText.contains(targetSentence) &&
+      activeSentenceText.trim().isNotEmpty &&
+      paragraphText.contains(activeSentenceText.trim())) {
+    targetSentence = activeSentenceText.trim();
+  }
+
+  if ((!ttsState.isPlaying && !ttsState.isPaused) ||
+      targetSentence.isEmpty ||
+      !paragraphText.contains(targetSentence)) {
+    return TextSpan(children: _buildDefaultSpans(node, textStyle));
+  }
+
+  final startIndex = paragraphText.indexOf(targetSentence);
+  final endIndex = startIndex + targetSentence.length;
+
+  return TextSpan(children: [
+    if (startIndex > 0)
+      TextSpan(text: paragraphText.substring(0, startIndex), style: textStyle),
+    TextSpan(
+      text: paragraphText.substring(startIndex, endIndex),
+      style: textStyle.copyWith(backgroundColor: theme.ttsHighlight),
+    ),
+    if (endIndex < paragraphText.length)
+      TextSpan(text: paragraphText.substring(endIndex), style: textStyle),
+  ]);
 }
