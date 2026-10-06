@@ -41,7 +41,12 @@ final documentChapterTitleProvider =
     }
   }
 
-  // 2. Fallback to closest preceding TOC entry
+  final isEpub = arg.filePath.toLowerCase().endsWith('.epub');
+  if (isEpub) {
+    return null;
+  }
+
+  // 2. Fallback to closest preceding TOC entry (for fixed-layout/PDF)
   flat.sort((a, b) => a.pageIndex.compareTo(b.pageIndex));
   String? closestTitle;
   for (final entry in flat) {

@@ -116,8 +116,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   List<PageChunk> _currentChapterPages = const [];
   PaginationParams? _lastPaginationParams;
   List<_ContinuousChapterSection> _continuousSections = [];
+  final Set<int> _loadingChapterIndices = {};
   bool _isLoadingNextChapter = false;
-  bool _isLoadingPreviousChapter = false;
 
   ItemScrollController get _effectiveItemScrollController =>
       widget.itemScrollController ??
@@ -141,6 +141,9 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
       ];
     }
+    if (_isEpub && !widget.settings.isPaginated) {
+      _ensureChaptersLoadedUpTo(_currentChapterIndex);
+    }
 
     _effectiveItemPositionsListener.itemPositions.addListener(
       _onPositionsChanged,
@@ -160,21 +163,25 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     }
 
     if (widget.epubNodes != null && widget.epubNodes != oldWidget.epubNodes) {
-      _continuousSections = [
-        _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
-      ];
+      if (!_continuousSections.any((s) => s.chapterIndex == _currentChapterIndex)) {
+        setState(() {
+          _continuousSections = [
+            ..._continuousSections,
+            _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
+          ]..sort((a, b) => a.chapterIndex.compareTo(b.chapterIndex));
+        });
+      }
     } else if (widget.chapterIndex != null &&
         widget.chapterIndex != _currentChapterIndex) {
       final newIndex = widget.chapterIndex!;
       _currentChapterIndex = newIndex;
       _currentPageIndexInChapter = widget.pageIndexInChapter ?? 0;
-      if (!_continuousSections.any((s) => s.chapterIndex == newIndex)) {
-        _continuousSections = [];
-        if (widget.epubNodes != null) {
-          _continuousSections = [
-            _ContinuousChapterSection(newIndex, widget.epubNodes!),
-          ];
+      if (widget.settings.isPaginated) {
+        if (widget.pageController.hasClients) {
+          widget.pageController.jumpToPage(_currentPageIndexInChapter);
         }
+      } else {
+        _ensureChaptersLoadedUpTo(newIndex);
       }
     } else if (widget.pageIndexInChapter != null &&
         widget.pageIndexInChapter != _currentPageIndexInChapter) {
@@ -185,9 +192,12 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         widget.pageCount > 0 ? widget.pageCount - 1 : 0,
       );
       _currentPageIndexInChapter = 0;
-      _continuousSections = [];
-      if (widget.pageController.hasClients) {
-        widget.pageController.jumpToPage(0);
+      if (widget.settings.isPaginated) {
+        if (widget.pageController.hasClients) {
+          widget.pageController.jumpToPage(0);
+        }
+      } else {
+        _ensureChaptersLoadedUpTo(_currentChapterIndex);
       }
     }
 
@@ -198,9 +208,10 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         }
       });
     } else if (oldWidget.settings.isPaginated && !widget.settings.isPaginated) {
+      _ensureChaptersLoadedUpTo(_currentChapterIndex);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _effectiveItemScrollController.isAttached) {
-          _effectiveItemScrollController.jumpTo(index: widget.initialPageIndex);
+          _scrollToChapterInContinuous(_currentChapterIndex);
         }
       });
     }
@@ -252,19 +263,6 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
     final items = _buildContinuousItems();
     if (items.isEmpty) return;
-
-    final leadingPositions = positions.toList()
-      ..sort((a, b) => a.itemLeadingEdge.compareTo(b.itemLeadingEdge));
-
-    final firstChapter = _continuousSections.first.chapterIndex;
-    if (leadingPositions.first.index <= 1 &&
-        firstChapter > 0 &&
-        !_isLoadingPreviousChapter) {
-      _loadPreviousChapterSeamless(
-        topIndex: leadingPositions.first.index,
-        topLeadingEdge: leadingPositions.first.itemLeadingEdge,
-      );
-    }
 
     final activeChapter = _determineActiveChapter(positions, items);
     if (activeChapter != null && activeChapter != _activeContinuousChapterIndex) {
@@ -358,79 +356,102 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     return items;
   }
 
-  Future<void> _loadPreviousChapterSeamless({
-    required int topIndex,
-    required double topLeadingEdge,
-  }) async {
-    if (_isLoadingPreviousChapter) return;
-    final firstChapter = _continuousSections.isNotEmpty
-        ? _continuousSections.first.chapterIndex
-        : _currentChapterIndex;
-    if (firstChapter <= 0) return;
-
-    setState(() {
-      _isLoadingPreviousChapter = true;
+  void _scrollToChapterInContinuous(int chapterIndex) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final items = _buildContinuousItems();
+      final targetItemIndex = items.indexWhere((it) =>
+          (it is _ChapterHeaderItem && it.chapterIndex == chapterIndex) ||
+          (it is _NodeItem && it.chapterIndex == chapterIndex));
+      if (targetItemIndex >= 0 && _effectiveItemScrollController.isAttached) {
+        _effectiveItemScrollController.jumpTo(index: targetItemIndex);
+      }
     });
+  }
+
+  Future<void> _ensureChaptersLoadedUpTo(int targetChapter) async {
+    final totalChapters = widget.pageCount > 0 ? widget.pageCount : 1;
+    final maxTarget = targetChapter.clamp(0, totalChapters - 1);
+
+    final loadedIndices =
+        _continuousSections.map((s) => s.chapterIndex).toSet();
+
+    final missing = <int>[];
+    for (var i = 0; i <= maxTarget; i++) {
+      if (!loadedIndices.contains(i) && !_loadingChapterIndices.contains(i)) {
+        missing.add(i);
+      }
+    }
+
+    if (missing.isEmpty) {
+      if (mounted && maxTarget > 0) {
+        _scrollToChapterInContinuous(maxTarget);
+      }
+      return;
+    }
+
+    _loadingChapterIndices.addAll(missing);
 
     try {
-      final prevNodes = await ref.read(
-        documentChapterNodesProvider((
-          filePath: widget.filePath,
-          chapterIndex: firstChapter - 1,
-        )).future,
-      );
-      if (!mounted) return;
-      if (prevNodes.isNotEmpty) {
-        final oldItemsCount = _buildContinuousItems().length;
-
-        setState(() {
-          _continuousSections = [
-            _ContinuousChapterSection(firstChapter - 1, prevNodes),
-            ..._continuousSections,
-          ];
-          _isLoadingPreviousChapter = false;
-        });
-
-        final newItemsCount = _buildContinuousItems().length;
-        final prependedCount = newItemsCount - oldItemsCount;
-        final targetIndex = topIndex + prependedCount;
-
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _effectiveItemScrollController.isAttached) {
-            _effectiveItemScrollController.jumpTo(
-              index: targetIndex,
-              alignment: topLeadingEdge,
+      final newSections = <_ContinuousChapterSection>[];
+      for (final ch in missing) {
+        if (ch == widget.chapterIndex &&
+            widget.epubNodes != null &&
+            widget.epubNodes!.isNotEmpty) {
+          newSections.add(_ContinuousChapterSection(ch, widget.epubNodes!));
+        } else {
+          try {
+            final nodes = await ref.read(
+              documentChapterNodesProvider((
+                filePath: widget.filePath,
+                chapterIndex: ch,
+              )).future,
             );
-          }
-        });
-      } else {
-        setState(() {
-          _isLoadingPreviousChapter = false;
-        });
+            if (nodes.isNotEmpty) {
+              newSections.add(_ContinuousChapterSection(ch, nodes));
+            }
+          } catch (_) {}
+        }
       }
+
+      if (!mounted) return;
+      setState(() {
+        final map = {for (final s in _continuousSections) s.chapterIndex: s};
+        for (final s in newSections) {
+          map[s.chapterIndex] = s;
+        }
+        _continuousSections = map.values.toList()
+          ..sort((a, b) => a.chapterIndex.compareTo(b.chapterIndex));
+      });
     } catch (_) {
-      if (mounted) {
-        setState(() {
-          _isLoadingPreviousChapter = false;
-        });
-      }
+    } finally {
+      _loadingChapterIndices.removeAll(missing);
+    }
+
+    if (mounted && maxTarget > 0) {
+      _scrollToChapterInContinuous(maxTarget);
     }
   }
 
   void scrollToPage(int targetPageIndex) {
     if (_isEpub) {
+      final target = targetPageIndex.clamp(
+        0,
+        widget.pageCount > 0 ? widget.pageCount - 1 : 0,
+      );
       setState(() {
-        _currentChapterIndex = targetPageIndex.clamp(
-          0,
-          widget.pageCount > 0 ? widget.pageCount - 1 : 0,
-        );
+        _currentChapterIndex = target;
         _currentPageIndexInChapter = 0;
       });
-      if (widget.pageController.hasClients) {
-        widget.pageController.jumpToPage(0);
+      if (widget.settings.isPaginated) {
+        if (widget.pageController.hasClients) {
+          widget.pageController.jumpToPage(0);
+        }
+      } else {
+        _ensureChaptersLoadedUpTo(target);
       }
-      widget.onPageChanged(_currentChapterIndex, 0.0);
-      widget.onEpubPageChanged?.call(_currentChapterIndex, 0);
+      widget.onPageChanged(target, 0.0);
+      widget.onEpubPageChanged?.call(target, 0);
       return;
     }
 
@@ -722,7 +743,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   }) {
     _currentChapterPages = pages;
 
-    // Settings reactivity: if layout changed, preserve anchor position
+    // Settings reactivity: if layout changed within the same chapter, preserve anchor position
     if (params != null &&
         _lastPaginationParams != null &&
         _lastPaginationParams!.chapterIndex == params.chapterIndex &&
@@ -738,6 +759,28 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           widget.pageController.jumpToPage(targetPage);
         }
       });
+    } else if (params != null &&
+        _lastPaginationParams != null &&
+        _lastPaginationParams!.chapterIndex != params.chapterIndex) {
+      final targetPage = widget.pageIndexInChapter ?? 0;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (widget.pageController.hasClients &&
+            widget.pageController.page?.round() != targetPage) {
+          widget.pageController.jumpToPage(targetPage);
+        }
+      });
+    } else if (_lastPaginationParams == null) {
+      final targetPage = widget.pageIndexInChapter ?? 0;
+      if (targetPage > 0) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (widget.pageController.hasClients &&
+              widget.pageController.page?.round() != targetPage) {
+            widget.pageController.jumpToPage(targetPage);
+          }
+        });
+      }
     }
     if (params != null) {
       _lastPaginationParams = params;
@@ -890,6 +933,9 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         : _currentChapterIndex;
     if (lastChapter >= widget.pageCount - 1) return;
 
+    final nextChapter = lastChapter + 1;
+    if (_continuousSections.any((s) => s.chapterIndex == nextChapter)) return;
+
     setState(() {
       _isLoadingNextChapter = true;
     });
@@ -898,16 +944,16 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       final nextNodes = await ref.read(
         documentChapterNodesProvider((
           filePath: widget.filePath,
-          chapterIndex: lastChapter + 1,
+          chapterIndex: nextChapter,
         )).future,
       );
       if (!mounted) return;
       if (nextNodes.isNotEmpty) {
         setState(() {
-          _continuousSections = [
-            ..._continuousSections,
-            _ContinuousChapterSection(lastChapter + 1, nextNodes),
-          ];
+          final map = {for (final s in _continuousSections) s.chapterIndex: s};
+          map[nextChapter] = _ContinuousChapterSection(nextChapter, nextNodes);
+          _continuousSections = map.values.toList()
+            ..sort((a, b) => a.chapterIndex.compareTo(b.chapterIndex));
           _isLoadingNextChapter = false;
         });
       } else {
@@ -924,20 +970,13 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     }
   }
 
-
   Widget _buildEpubContinuousView(
     ReaderThemeData theme,
     double columnWidth,
     double columnHeight,
     double horizontalPadding,
   ) {
-    if (widget.epubNodes != null) {
-      if (!_continuousSections
-          .any((s) => s.chapterIndex == _currentChapterIndex)) {
-        _continuousSections = [
-          _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
-        ];
-      }
+    if (_continuousSections.isNotEmpty) {
       return _buildEpubListView(
         theme,
         columnWidth,
@@ -946,7 +985,12 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       );
     }
 
-    if (_continuousSections.isNotEmpty) {
+    if (widget.epubNodes != null && widget.epubNodes!.isNotEmpty) {
+      if (!_continuousSections.any((s) => s.chapterIndex == _currentChapterIndex)) {
+        _continuousSections = [
+          _ContinuousChapterSection(_currentChapterIndex, widget.epubNodes!),
+        ];
+      }
       return _buildEpubListView(
         theme,
         columnWidth,
@@ -981,11 +1025,22 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           ),
         ),
         data: (nodes) {
-          if (!_continuousSections
-              .any((s) => s.chapterIndex == _currentChapterIndex)) {
-            _continuousSections = [
-              _ContinuousChapterSection(_currentChapterIndex, nodes),
-            ];
+          if (nodes.isNotEmpty) {
+            final exists = _continuousSections
+                .any((s) => s.chapterIndex == _currentChapterIndex);
+            if (!exists) {
+              _continuousSections = [
+                ..._continuousSections,
+                _ContinuousChapterSection(_currentChapterIndex, nodes),
+              ]..sort((a, b) => a.chapterIndex.compareTo(b.chapterIndex));
+            }
+            if (_currentChapterIndex > 0) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  _ensureChaptersLoadedUpTo(_currentChapterIndex);
+                }
+              });
+            }
           }
           return KeyedSubtree(
             key: ValueKey('continuous_list_${widget.filePath}'),

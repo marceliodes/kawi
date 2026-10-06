@@ -50,6 +50,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   Timer? _progressSaveDebounce;
 
   int _currentPageIndex = 0;
+  int _currentChapterIndex = 0;
 
   int _currentPageIndexInChapter = 0;
   List<PageChunk> _currentChapterPages = const [];
@@ -91,6 +92,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             0,
             widget.document.pageCount > 0 ? widget.document.pageCount - 1 : 0,
           );
+          _currentChapterIndex = _currentPageIndex;
           _currentPageIndexInChapter = progress.lastReadSentenceIndex;
           _currentScrollOffset = progress.lastReadScrollOffset;
           _currentChapterTitle = progress.currentChapter;
@@ -143,6 +145,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     if (pageChanged) {
       setState(() {
         _currentPageIndex = pageIndex;
+        _currentChapterIndex = pageIndex;
         _currentPageIndexInChapter = 0;
         _currentScrollOffset = offset;
       });
@@ -159,6 +162,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     if (_isRestoring) return;
     setState(() {
       _currentPageIndex = chapterIndex;
+      _currentChapterIndex = chapterIndex;
       _currentPageIndexInChapter = pageIndexInChapter;
     });
     _resolveChapterTitle(chapterIndex);
@@ -233,6 +237,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
       setState(() {
         _currentPageIndex = targetChapter;
+        _currentChapterIndex = targetChapter;
         _currentPageIndexInChapter = lastPageIndex;
         _currentChapterPages = pages;
         _currentScrollOffset = 0.0;
@@ -304,9 +309,11 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     if (pageIndex < 0) return;
     final total = widget.document.pageCount > 0 ? widget.document.pageCount : 1;
     final clampedPage = pageIndex.clamp(0, total - 1);
+    final isEpub = widget.document.isEpub;
 
     setState(() {
       _currentPageIndex = clampedPage;
+      _currentChapterIndex = clampedPage;
       _currentPageIndexInChapter = 0;
       _currentScrollOffset = 0.0;
     });
@@ -314,7 +321,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     final settings = ref.read(readerSettingsProvider);
     if (settings.isPaginated) {
       if (_pageController.hasClients) {
-        _pageController.jumpToPage(clampedPage);
+        _pageController.jumpToPage(isEpub ? 0 : clampedPage);
       }
     } else {
       if (_itemScrollController.isAttached) {
@@ -324,8 +331,16 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       }
     }
 
+    if (isEpub) {
+      ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+            chapterIndex: clampedPage,
+            paragraphIndex: 0,
+            charOffset: 0,
+          );
+    }
+
     _resolveChapterTitle(clampedPage);
-    _debounceSaveProgress(clampedPage, _currentScrollOffset);
+    _debounceSaveProgress(clampedPage, _currentScrollOffset, pageIndexInChapter: 0);
   }
 
   void _openTypographySheet() {
@@ -798,6 +813,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                         if (_currentPageIndex != chapterIndex) {
                           setState(() {
                             _currentPageIndex = chapterIndex;
+                            _currentChapterIndex = chapterIndex;
                             _resolveChapterTitle(chapterIndex);
                           });
                           _debounceSaveProgress(chapterIndex, 0.0);
@@ -1034,7 +1050,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             child: Text(
               _currentChapterTitle ??
                   (isEpub
-                      ? 'Chapter ${_currentPageIndex + 1}'
+                      ? 'Chapter ${_currentChapterIndex + 1}'
                       : 'Page ${_currentPageIndex + 1}'),
               style: AppTypography.micro.copyWith(
                 color: theme.textMuted,
