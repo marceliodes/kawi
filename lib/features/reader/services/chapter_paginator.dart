@@ -52,6 +52,7 @@ class ChapterPaginator {
         startCharOffset: pageStartCharOffset,
         endCharOffset: pageEndCharOffset,
       ));
+      debugPrint('>>> [PROBE PAGINATOR] Emitted PageChunk #${pages.length - 1} with ${pages.last.nodes.length} nodes: ${pages.last.nodes.map((n) => n.runtimeType).toList()}');
       currentPageNodes = [];
       remainingHeight = maxHeight;
     }
@@ -95,6 +96,7 @@ class ChapterPaginator {
           startCharOffset: 0,
           endCharOffset: 0,
         ));
+        debugPrint('>>> [PROBE PAGINATOR] Emitted PageChunk #${pages.length - 1} with ${pages.last.nodes.length} nodes: ${pages.last.nodes.map((n) => n.runtimeType).toList()}');
 
         // Reset pagination height for subsequent nodes
         remainingHeight = maxHeight;

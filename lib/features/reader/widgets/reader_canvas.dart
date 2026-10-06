@@ -24,11 +24,6 @@ class _ContinuousChapterSection {
 
 sealed class _ContinuousListItem {}
 
-class _PrevChapterItem extends _ContinuousListItem {
-  final int prevChapterIndex;
-  _PrevChapterItem(this.prevChapterIndex);
-}
-
 class _ChapterHeaderItem extends _ContinuousListItem {
   final int chapterIndex;
   _ChapterHeaderItem(this.chapterIndex);
@@ -48,11 +43,9 @@ class _NodeItem extends _ContinuousListItem {
 class _NextChapterItem extends _ContinuousListItem {
   final int currentChapterIndex;
   final int? nextChapterIndex;
-  final bool hasPrevious;
   _NextChapterItem({
     required this.currentChapterIndex,
     required this.nextChapterIndex,
-    required this.hasPrevious,
   });
 }
 
@@ -79,6 +72,7 @@ class ReaderCanvas extends ConsumerStatefulWidget {
     this.onNextChapter,
     this.onPreviousChapter,
     this.onEpubPageChanged,
+    this.onChapterChanged,
   });
 
   final String filePath;
@@ -103,6 +97,7 @@ class ReaderCanvas extends ConsumerStatefulWidget {
   final VoidCallback? onNextChapter;
   final VoidCallback? onPreviousChapter;
   final void Function(int chapterIndex, int pageIndexInChapter)? onEpubPageChanged;
+  final ValueChanged<int>? onChapterChanged;
 
   @override
   ConsumerState<ReaderCanvas> createState() => ReaderCanvasState();
@@ -220,8 +215,15 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     super.dispose();
   }
 
+  int? _activeContinuousChapterIndex;
+
   void _onPositionsChanged() {
-    if (!mounted || widget.settings.isPaginated || _isEpub) return;
+    if (!mounted || widget.settings.isPaginated) return;
+
+    if (_isEpub) {
+      _handleEpubContinuousPositions();
+      return;
+    }
 
     final positions = _effectiveItemPositionsListener.itemPositions.value;
     if (positions.isEmpty) return;
@@ -242,6 +244,177 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       if (!mounted) return;
       widget.onPageChanged(active.index, active.itemLeadingEdge);
     });
+  }
+
+  void _handleEpubContinuousPositions() {
+    final positions = _effectiveItemPositionsListener.itemPositions.value;
+    if (positions.isEmpty || _continuousSections.isEmpty) return;
+
+    final items = _buildContinuousItems();
+    if (items.isEmpty) return;
+
+    final leadingPositions = positions.toList()
+      ..sort((a, b) => a.itemLeadingEdge.compareTo(b.itemLeadingEdge));
+
+    final firstChapter = _continuousSections.first.chapterIndex;
+    if (leadingPositions.first.index <= 1 &&
+        firstChapter > 0 &&
+        !_isLoadingPreviousChapter) {
+      _loadPreviousChapterSeamless(
+        topIndex: leadingPositions.first.index,
+        topLeadingEdge: leadingPositions.first.itemLeadingEdge,
+      );
+    }
+
+    final activeChapter = _determineActiveChapter(positions, items);
+    if (activeChapter != null && activeChapter != _activeContinuousChapterIndex) {
+      _activeContinuousChapterIndex = activeChapter;
+      _currentChapterIndex = activeChapter;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        widget.onChapterChanged?.call(activeChapter);
+        widget.onPageChanged(activeChapter, 0.0);
+      });
+    }
+  }
+
+  int? _determineActiveChapter(
+    Iterable<ItemPosition> positions,
+    List<_ContinuousListItem> items,
+  ) {
+    final chapterCoverage = <int, double>{};
+
+    for (final pos in positions) {
+      if (pos.index < 0 || pos.index >= items.length) continue;
+      final ch = _chapterIndexForItem(items[pos.index]);
+      if (ch == null) continue;
+
+      final top = pos.itemLeadingEdge.clamp(0.0, 0.5);
+      final bottom = pos.itemTrailingEdge.clamp(0.0, 0.5);
+      final overlap = bottom - top;
+      if (overlap > 0) {
+        chapterCoverage[ch] = (chapterCoverage[ch] ?? 0.0) + overlap;
+      }
+    }
+
+    if (chapterCoverage.isNotEmpty) {
+      int? bestChapter;
+      double maxCoverage = -1.0;
+      chapterCoverage.forEach((chapter, coverage) {
+        if (coverage > maxCoverage) {
+          maxCoverage = coverage;
+          bestChapter = chapter;
+        }
+      });
+      return bestChapter;
+    }
+
+    final sorted = positions.toList()
+      ..sort((a, b) => a.itemLeadingEdge.compareTo(b.itemLeadingEdge));
+    for (final pos in sorted) {
+      if (pos.index >= 0 && pos.index < items.length) {
+        final ch = _chapterIndexForItem(items[pos.index]);
+        if (ch != null) return ch;
+      }
+    }
+    return null;
+  }
+
+  int? _chapterIndexForItem(_ContinuousListItem item) {
+    if (item is _ChapterHeaderItem) return item.chapterIndex;
+    if (item is _NodeItem) return item.chapterIndex;
+    if (item is _NextChapterItem) return item.currentChapterIndex;
+    return null;
+  }
+
+  List<_ContinuousListItem> _buildContinuousItems() {
+    final sections = _continuousSections;
+    if (sections.isEmpty) return const [];
+
+    final items = <_ContinuousListItem>[];
+    final firstChapter = sections.first.chapterIndex;
+    final lastChapter = sections.last.chapterIndex;
+
+    for (var sIdx = 0; sIdx < sections.length; sIdx++) {
+      final section = sections[sIdx];
+      if (sIdx > 0 || firstChapter > 0) {
+        items.add(_ChapterHeaderItem(section.chapterIndex));
+      }
+      for (var nIdx = 0; nIdx < section.nodes.length; nIdx++) {
+        items.add(_NodeItem(
+          chapterIndex: section.chapterIndex,
+          nodeIndex: nIdx,
+          node: section.nodes[nIdx],
+        ));
+      }
+    }
+
+    items.add(_NextChapterItem(
+      currentChapterIndex: lastChapter,
+      nextChapterIndex:
+          lastChapter < widget.pageCount - 1 ? lastChapter + 1 : null,
+    ));
+
+    return items;
+  }
+
+  Future<void> _loadPreviousChapterSeamless({
+    required int topIndex,
+    required double topLeadingEdge,
+  }) async {
+    if (_isLoadingPreviousChapter) return;
+    final firstChapter = _continuousSections.isNotEmpty
+        ? _continuousSections.first.chapterIndex
+        : _currentChapterIndex;
+    if (firstChapter <= 0) return;
+
+    setState(() {
+      _isLoadingPreviousChapter = true;
+    });
+
+    try {
+      final prevNodes = await ref.read(
+        documentChapterNodesProvider((
+          filePath: widget.filePath,
+          chapterIndex: firstChapter - 1,
+        )).future,
+      );
+      if (!mounted) return;
+      if (prevNodes.isNotEmpty) {
+        final oldItemsCount = _buildContinuousItems().length;
+
+        setState(() {
+          _continuousSections = [
+            _ContinuousChapterSection(firstChapter - 1, prevNodes),
+            ..._continuousSections,
+          ];
+          _isLoadingPreviousChapter = false;
+        });
+
+        final newItemsCount = _buildContinuousItems().length;
+        final prependedCount = newItemsCount - oldItemsCount;
+        final targetIndex = topIndex + prependedCount;
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _effectiveItemScrollController.isAttached) {
+            _effectiveItemScrollController.jumpTo(
+              index: targetIndex,
+              alignment: topLeadingEdge,
+            );
+          }
+        });
+      } else {
+        setState(() {
+          _isLoadingPreviousChapter = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoadingPreviousChapter = false;
+        });
+      }
+    }
   }
 
   void scrollToPage(int targetPageIndex) {
@@ -413,6 +586,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       }
     });
 
+    debugPrint('>>> [PROBE] ReaderCanvas _isEpub: $_isEpub | widget.isEpub: ${widget.isEpub} | isPaginated: $isPaginated');
+
     return Focus(
       focusNode: _focusNode,
       autofocus: true,
@@ -548,7 +723,10 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     _currentChapterPages = pages;
 
     // Settings reactivity: if layout changed, preserve anchor position
-    if (params != null && _lastPaginationParams != null && _lastPaginationParams != params) {
+    if (params != null &&
+        _lastPaginationParams != null &&
+        _lastPaginationParams!.chapterIndex == params.chapterIndex &&
+        _lastPaginationParams != params) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         final targetPage = ref
@@ -746,46 +924,6 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     }
   }
 
-  Future<void> _loadPreviousChapter() async {
-    if (_isLoadingPreviousChapter) return;
-    final firstChapter = _continuousSections.isNotEmpty
-        ? _continuousSections.first.chapterIndex
-        : _currentChapterIndex;
-    if (firstChapter <= 0) return;
-
-    setState(() {
-      _isLoadingPreviousChapter = true;
-    });
-
-    try {
-      final prevNodes = await ref.read(
-        documentChapterNodesProvider((
-          filePath: widget.filePath,
-          chapterIndex: firstChapter - 1,
-        )).future,
-      );
-      if (!mounted) return;
-      if (prevNodes.isNotEmpty) {
-        setState(() {
-          _continuousSections = [
-            _ContinuousChapterSection(firstChapter - 1, prevNodes),
-            ..._continuousSections,
-          ];
-          _isLoadingPreviousChapter = false;
-        });
-      } else {
-        setState(() {
-          _isLoadingPreviousChapter = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _isLoadingPreviousChapter = false;
-        });
-      }
-    }
-  }
 
   Widget _buildEpubContinuousView(
     ReaderThemeData theme,
@@ -876,163 +1014,69 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       color: theme.textPrimary,
     );
 
-    final sections = _continuousSections;
-    if (sections.isEmpty) {
+    final items = _buildContinuousItems();
+    if (items.isEmpty) {
       return const SizedBox.shrink();
     }
 
-    final items = <_ContinuousListItem>[];
-    final firstChapter = sections.first.chapterIndex;
-    final lastChapter = sections.last.chapterIndex;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ScrollablePositionedList.builder(
+            itemScrollController: _effectiveItemScrollController,
+            itemPositionsListener: _effectiveItemPositionsListener,
+            padding: EdgeInsets.symmetric(
+              horizontal: horizontalPadding,
+              vertical: Spacing.xl + 40.0,
+            ),
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final item = items[index];
 
-    if (firstChapter > 0) {
-      items.add(_PrevChapterItem(firstChapter - 1));
-    }
+              if (item is _ChapterHeaderItem) {
+                return _ChapterHeaderWidget(
+                  filePath: widget.filePath,
+                  chapterIndex: item.chapterIndex,
+                  columnWidth: columnWidth,
+                  theme: theme,
+                );
+              }
 
-    for (var sIdx = 0; sIdx < sections.length; sIdx++) {
-      final section = sections[sIdx];
-      if (sIdx > 0 || firstChapter > 0) {
-        items.add(_ChapterHeaderItem(section.chapterIndex));
-      }
-      for (var nIdx = 0; nIdx < section.nodes.length; nIdx++) {
-        items.add(_NodeItem(
-          chapterIndex: section.chapterIndex,
-          nodeIndex: nIdx,
-          node: section.nodes[nIdx],
-        ));
-      }
-    }
-
-    items.add(_NextChapterItem(
-      currentChapterIndex: lastChapter,
-      nextChapterIndex:
-          lastChapter < widget.pageCount - 1 ? lastChapter + 1 : null,
-      hasPrevious: firstChapter > 0,
-    ));
-
-    return NotificationListener<ScrollNotification>(
-      onNotification: (notification) {
-        if (notification is ScrollUpdateNotification ||
-            notification is OverscrollNotification) {
-          final metrics = notification.metrics;
-          // Auto load next chapter when approaching bottom edge
-          if (metrics.pixels >= metrics.maxScrollExtent - 300 &&
-              !_isLoadingNextChapter) {
-            _loadNextChapter();
-          }
-          // Auto load previous chapter when at top edge
-          if (metrics.pixels <= metrics.minScrollExtent + 50 &&
-              !_isLoadingPreviousChapter) {
-            _loadPreviousChapter();
-          }
-        }
-        return false;
-      },
-      child: ListView.builder(
-        controller: widget.scrollController,
-        padding: EdgeInsets.symmetric(
-          horizontal: horizontalPadding,
-          vertical: Spacing.xl + 40.0,
-        ),
-        itemCount: items.length,
-        itemBuilder: (context, index) {
-          final item = items[index];
-
-          if (item is _PrevChapterItem) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: Spacing.xl),
-              child: Center(
-                child: _isLoadingPreviousChapter
-                    ? SizedBox(
-                        height: 24,
-                        width: 24,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: theme.accent,
-                        ),
-                      )
-                    : TextButton.icon(
-                        onPressed: () {
-                          if (widget.onPreviousChapter != null) {
-                            widget.onPreviousChapter!();
-                          } else {
-                            _loadPreviousChapter();
-                          }
-                        },
-                        icon: const PhosphorIcon(
-                          PhosphorIconsLight.arrowLeft,
-                          size: 18,
-                        ),
-                        label: const Text('Previous Chapter'),
-                      ),
-              ),
-            );
-          }
-
-          if (item is _ChapterHeaderItem) {
-            return _ChapterHeaderWidget(
-              filePath: widget.filePath,
-              chapterIndex: item.chapterIndex,
-              columnWidth: columnWidth,
-              theme: theme,
-            );
-          }
-
-          if (item is _NodeItem) {
-            return Center(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: columnWidth),
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 16.0),
-                  child: _buildNodeWidget(
-                    item.node,
-                    baseStyle,
-                    theme,
-                    viewportHeight: columnHeight,
-                  ),
-                ),
-              ),
-            );
-          }
-
-          if (item is _NextChapterItem) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: Spacing.xl),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_isLoadingNextChapter)
-                    Padding(
-                      padding: const EdgeInsets.all(Spacing.md),
-                      child: SizedBox(
-                        height: 24,
-                        width: 24,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: theme.accent,
-                        ),
+              if (item is _NodeItem) {
+                return Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: columnWidth),
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 16.0),
+                      child: _buildNodeWidget(
+                        item.node,
+                        baseStyle,
+                        theme,
+                        viewportHeight: columnHeight,
                       ),
                     ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  ),
+                );
+              }
+
+              if (item is _NextChapterItem) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: Spacing.xl),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (item.hasPrevious)
-                        TextButton.icon(
-                          onPressed: () {
-                            if (widget.onPreviousChapter != null) {
-                              widget.onPreviousChapter!();
-                            } else {
-                              _loadPreviousChapter();
-                            }
-                          },
-                          icon: const PhosphorIcon(
-                            PhosphorIconsLight.arrowLeft,
-                            size: 18,
+                      if (_isLoadingNextChapter)
+                        Padding(
+                          padding: const EdgeInsets.all(Spacing.md),
+                          child: SizedBox(
+                            height: 24,
+                            width: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: theme.accent,
+                            ),
                           ),
-                          label: const Text('Previous Chapter'),
                         ),
-                      if (item.hasPrevious && item.nextChapterIndex != null)
-                        const SizedBox(width: Spacing.md),
                       if (item.nextChapterIndex != null)
                         TextButton.icon(
                           onPressed: () {
@@ -1050,14 +1094,25 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                         ),
                     ],
                   ),
-                ],
-              ),
-            );
-          }
+                );
+              }
 
-          return const SizedBox.shrink();
-        },
-      ),
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+        Positioned(
+          left: 0,
+          top: 0,
+          width: 0,
+          height: 0,
+          child: SizedBox.shrink(
+            child: ListView(
+              physics: const NeverScrollableScrollPhysics(),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1532,14 +1587,10 @@ class _ChapterHeaderWidget extends ConsumerWidget {
       chapterIndex: chapterIndex,
     )));
 
-    final title = titleAsync.asData?.value;
+    final title = titleAsync.asData?.value?.trim();
     final String label;
     if (title != null && title.isNotEmpty) {
-      if (title.toLowerCase().startsWith('chapter')) {
-        label = title;
-      } else {
-        label = 'Chapter ${chapterIndex + 1}: $title';
-      }
+      label = title;
     } else {
       label = 'Chapter ${chapterIndex + 1}';
     }

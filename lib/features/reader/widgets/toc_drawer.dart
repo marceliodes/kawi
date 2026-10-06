@@ -241,10 +241,10 @@ class _TocDrawerState extends ConsumerState<TocDrawer> {
   }) {
     return InkWell(
       onTap: () {
+        Navigator.of(context).pop();
         if (item.entry.pageIndex >= 0) {
           widget.onSelectPage(item.entry.pageIndex);
         }
-        Navigator.of(context).pop();
       },
       child: Container(
         padding: EdgeInsets.only(

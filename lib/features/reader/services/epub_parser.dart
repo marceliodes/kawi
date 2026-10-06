@@ -145,7 +145,8 @@ class EpubParser {
     }
 
     final rawTitle = chapter.Title?.trim() ?? '';
-    final title = rawTitle.isNotEmpty ? rawTitle : 'Chapter ${chapterIndex + 1}';
+    final String title =
+        rawTitle.isNotEmpty ? rawTitle : 'Chapter ${chapterIndex + 1}';
 
     return TocEntry(
       title: title,
@@ -176,7 +177,8 @@ class EpubParser {
     }
 
     final rawTitle = chapter.Title?.trim() ?? '';
-    final title = rawTitle.isNotEmpty ? rawTitle : 'Chapter ${chapterIndex + 1}';
+    final String title =
+        rawTitle.isNotEmpty ? rawTitle : 'Chapter ${chapterIndex + 1}';
 
     return TocEntry(
       title: title,
