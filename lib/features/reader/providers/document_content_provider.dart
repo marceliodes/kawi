@@ -95,14 +95,23 @@ final documentChapterNodesProvider =
         }
         flatten(toc);
         flat.sort((a, b) => a.pageIndex.compareTo(b.pageIndex));
+        int? entryIdx;
         for (var i = 0; i < flat.length; i++) {
-          if (flat[i].pageIndex <= arg.chapterIndex) {
-            startPage = flat[i].pageIndex;
-            if (i + 1 < flat.length) {
-              endPage = flat[i + 1].pageIndex;
-            } else {
-              endPage = startPage + 1;
-            }
+          if (flat[i].pageIndex == arg.chapterIndex) {
+            entryIdx = i;
+            break;
+          }
+        }
+        if (entryIdx == null && arg.chapterIndex < flat.length) {
+          entryIdx = arg.chapterIndex;
+        }
+
+        if (entryIdx != null) {
+          startPage = flat[entryIdx].pageIndex;
+          if (entryIdx + 1 < flat.length) {
+            endPage = flat[entryIdx + 1].pageIndex;
+          } else {
+            endPage = startPage + 1;
           }
         }
       }

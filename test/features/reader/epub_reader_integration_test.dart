@@ -21,6 +21,7 @@ import 'package:kawi/features/tts/models/tts_models.dart';
 import 'package:kawi/features/tts/providers/tts_provider.dart';
 import 'package:kawi/features/tts/providers/voice_manager_provider.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 class _TestReaderSettingsNotifier extends ReaderSettingsNotifier {
   final ReaderSettings initialSettings;
@@ -156,7 +157,7 @@ void main() {
       expect(find.byType(SelectableText), findsWidgets);
     });
 
-    testWidgets('ReaderCanvas renders Continuous mode with ListView of nodes',
+    testWidgets('ReaderCanvas renders Continuous mode with ScrollablePositionedList of chapters',
         (tester) async {
       if (!epubFile.existsSync() || sampleNodes.isEmpty) return;
 
@@ -189,11 +190,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 300));
 
-      // In continuous mode, ListView should be rendered
-      expect(find.byType(ListView), findsOneWidget);
+      // In continuous mode, ScrollablePositionedList should be rendered
+      expect(find.byType(ScrollablePositionedList), findsOneWidget);
       expect(find.byType(SelectableText), findsWidgets);
-      // Next Chapter button should be present at the bottom of the list
-      expect(find.text('Next Chapter'), findsOneWidget);
+      // Chapter header should be present
+      expect(find.text('Chapter 1'), findsWidgets);
     });
 
     testWidgets('TTS highlighting renders active sentence span without word fragmentation',
@@ -450,7 +451,7 @@ void main() {
       expect(find.textContaining('Page 2 of 7'), findsWidgets);
     });
 
-    testWidgets('ReaderScreen in Continuous mode passes epubNodes and handles Next Chapter',
+    testWidgets('ReaderScreen in Continuous mode renders index-stable ScrollablePositionedList and passes epubNodes',
         (tester) async {
       if (!epubFile.existsSync() || sampleNodes.isEmpty) return;
 
@@ -490,18 +491,9 @@ void main() {
       expect(readerCanvas.epubNodes, isNotNull);
       expect(readerCanvas.epubNodes!.length, 3);
 
-      // Tap Next Chapter button
-      final nextChapterBtn = find.text('Next Chapter');
-      expect(nextChapterBtn, findsOneWidget);
-      await tester.tap(nextChapterBtn);
-      await tester.pump(const Duration(milliseconds: 150));
-      await tester.pump(const Duration(milliseconds: 150));
-      await tester.pump(const Duration(milliseconds: 50));
-
-      // Document progress should advance to chapter 1
-      final updatedCanvas =
-          tester.widget<ReaderCanvas>(find.byType(ReaderCanvas).last);
-      expect(updatedCanvas.chapterIndex, 1);
+      // Verify index-stable ScrollablePositionedList renders chapters continuously
+      expect(find.byType(ScrollablePositionedList), findsOneWidget);
+      expect(find.text('Chapter 1'), findsWidgets);
     });
   });
 }

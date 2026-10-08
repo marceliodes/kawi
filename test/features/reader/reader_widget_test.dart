@@ -15,12 +15,15 @@ import 'package:kawi/features/reader/providers/reader_settings_provider.dart';
 import 'package:kawi/features/reader/screens/reader_screen.dart';
 import 'package:kawi/features/reader/services/document_extractor.dart';
 import 'package:kawi/features/reader/widgets/reader_canvas.dart';
+import 'package:kawi/features/reader/widgets/toc_drawer.dart';
 import 'package:kawi/features/reader/widgets/tts_control_bar.dart';
 import 'package:kawi/features/reader/widgets/typography_settings_sheet.dart';
 import 'package:kawi/features/tts/models/tts_models.dart';
 import 'package:kawi/features/tts/providers/tts_provider.dart';
 import 'package:kawi/features/tts/providers/voice_manager_provider.dart';
+import 'package:kawi/features/reader/models/document_models.dart';
 import 'package:kawi/features/tts/services/tts_text_normalizer.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 Widget _createReaderTestApp({
   required ProviderContainer container,
@@ -197,12 +200,35 @@ void main() {
 
       final scaffoldState = tester.state<ScaffoldState>(find.byType(Scaffold));
       expect(scaffoldState.isDrawerOpen, isTrue);
-      expect(find.text('Book One'), findsOneWidget);
-      expect(find.text('Book Two'), findsOneWidget);
-      expect(find.text('Book Three'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(TocDrawer),
+          matching: find.text('Book One'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(TocDrawer),
+          matching: find.text('Book Two'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(TocDrawer),
+          matching: find.text('Book Three'),
+        ),
+        findsOneWidget,
+      );
 
       // Select Book Two (page 4, index 3)
-      await tester.tap(find.text('Book Two'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(TocDrawer),
+          matching: find.text('Book Two'),
+        ),
+      );
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pump(const Duration(milliseconds: 200));
 
@@ -386,6 +412,97 @@ void main() {
         mockNotifier.state.currentSentenceText,
         equals('Chapter 1: The Diary (Part 1)'),
       );
+    },
+  );
+
+  testWidgets(
+    'continuous EPUB view renders ScrollablePositionedList without prev/next buttons and with chapter headers',
+    (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          documentTocProvider(testDoc.filePath)
+              .overrideWith((ref) => Future.value(sampleToc)),
+          documentChapterNodesProvider.overrideWith((ref, arg) {
+            return Future.value([
+              const HeadingNode(1, [TextSegment('Chapter 1: The Beginning')]),
+              const ParagraphNode([TextSegment('First paragraph of text.')]),
+            ]);
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _createReaderTestApp(container: container, document: testDoc),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // Index-stable continuous view uses ScrollablePositionedList
+      expect(find.byType(ScrollablePositionedList), findsOneWidget);
+      // Prepend chapter header
+      expect(find.text('Chapter 1'), findsWidgets);
+      // AST nodes rendered
+      expect(find.textContaining('First paragraph of text.'), findsWidgets);
+      // No "Next Chapter" or "Previous Chapter" buttons
+      expect(find.text('Next Chapter'), findsNothing);
+      expect(find.text('Previous Chapter'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'TTS highlighting on headings matches with whitespace normalization',
+    (tester) async {
+      final mockNotifier = _MockReaderTtsNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockNotifier),
+          documentTocProvider(testDoc.filePath)
+              .overrideWith((ref) => Future.value(sampleToc)),
+          documentChapterNodesProvider.overrideWith((ref, arg) {
+            return Future.value([
+              const HeadingNode(1, [TextSegment('  Chapter 3: Resolve \n')]),
+              const ParagraphNode([TextSegment('Paragraph following heading.')]),
+            ]);
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _createReaderTestApp(container: container, document: testDoc),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // TTS speaks normalized sentence "Chapter 3: Resolve"
+      mockNotifier.state = mockNotifier.state.copyWith(
+        playbackState: TtsPlaybackState.playing,
+        currentSentenceIndex: 0,
+        currentSentenceText: 'Chapter 3: Resolve',
+      );
+      await tester.pump();
+
+      // Verify SelectableText has ttsHighlight on heading
+      final selectableTexts = tester
+          .widgetList<SelectableText>(find.byType(SelectableText))
+          .toList();
+      expect(selectableTexts, isNotEmpty);
+
+      final theme = ReaderThemeTokens.fromPreset(ReaderThemePreset.paper);
+      bool headingHighlighted = false;
+      void checkSpan(InlineSpan span) {
+        if (span is TextSpan) {
+          if (span.style?.backgroundColor == theme.ttsHighlight) {
+            headingHighlighted = true;
+          }
+          span.children?.forEach(checkSpan);
+        }
+      }
+
+      checkSpan(selectableTexts.first.textSpan!);
+      expect(headingHighlighted, isTrue);
     },
   );
 }

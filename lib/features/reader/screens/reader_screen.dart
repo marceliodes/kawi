@@ -691,12 +691,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       backgroundColor: theme.bgCanvas,
       drawer: TocDrawer(
         filePath: widget.document.filePath,
-        currentPageIndex: _currentPageIndex,
+        currentPageIndex: _currentChapterIndex,
         isPaginated: settings.isPaginated,
         onSelectPage: (pageIndex) {
-          if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
-            Navigator.of(context).pop();
-          }
+          Navigator.of(context).pop();
+          setState(() {
+            _currentPageIndexInChapter = 0;
+          });
           _navigateToPage(pageIndex);
         },
       ),
@@ -755,7 +756,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               ? (((_currentPageIndexInChapter + 1) / totalPages) * 100)
                   .clamp(0, 100)
                   .round()
-              : (((_currentPageIndex + 1) / totalPages) * 100)
+              : (((_currentChapterIndex + 1) / totalPages) * 100)
                   .clamp(0, 100)
                   .round();
 
@@ -791,6 +792,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       pageCount: widget.document.pageCount,
                       settings: settings,
                       initialPageIndex: _currentPageIndex,
+                      initialChapterIndex: _currentChapterIndex,
                       initialScrollOffset: _currentScrollOffset,
                       scrollController: _scrollController,
                       itemScrollController: _itemScrollController,
@@ -809,14 +811,15 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       onNextChapter: _navigateToNextChapter,
                       onPreviousChapter: _navigateToPreviousChapter,
                       onEpubPageChanged: _onEpubPageChanged,
-                      onChapterChanged: (chapterIndex) {
-                        if (_currentPageIndex != chapterIndex) {
+                      onChapterChanged: (newChapterIndex) {
+                        if (_currentChapterIndex != newChapterIndex) {
                           setState(() {
-                            _currentPageIndex = chapterIndex;
-                            _currentChapterIndex = chapterIndex;
-                            _resolveChapterTitle(chapterIndex);
+                            _currentChapterIndex = newChapterIndex;
+                            _currentPageIndex = newChapterIndex;
+                            _currentPageIndexInChapter = 0;
                           });
-                          _debounceSaveProgress(chapterIndex, 0.0);
+                          _resolveChapterTitle(newChapterIndex);
+                          _debounceSaveProgress(newChapterIndex, 0.0);
                         }
                       },
                     ),
@@ -949,18 +952,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
                 ),
-                if (_currentChapterTitle != null &&
-                    _currentChapterTitle!.isNotEmpty)
-                  Text(
-                    _currentChapterTitle!,
-                    style: AppTypography.micro.copyWith(
-                      color: theme.textMuted,
-                      fontSize: 11,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
+                Text(
+                  (_currentChapterTitle != null &&
+                          _currentChapterTitle!.isNotEmpty)
+                      ? _currentChapterTitle!
+                      : (widget.document.isEpub
+                          ? 'Chapter ${_currentChapterIndex + 1}'
+                          : 'Page ${_currentPageIndex + 1}'),
+                  style: AppTypography.micro.copyWith(
+                    color: theme.textMuted,
+                    fontSize: 11,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                ),
               ],
             ),
           ),
