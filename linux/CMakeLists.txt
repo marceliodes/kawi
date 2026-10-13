@@ -162,13 +162,16 @@ endif()
 
 # Ensure share/ (containing espeak-ng-data) and lib/ (containing libonnxruntime and libpiper) are accessible across run directories
 install(CODE "
-  if(EXISTS \"${BUILD_BUNDLE_DIR}/share\")
-    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/share\" \"\${CMAKE_BINARY_DIR}/intermediates_do_not_run/share\")
-    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/share\" \"\${CMAKE_BINARY_DIR}/share\")
+  set(BUNDLE_LIB_DIR \"\${CMAKE_INSTALL_PREFIX}/lib\")
+  set(BUNDLE_SHARE_DIR \"\${CMAKE_INSTALL_PREFIX}/share\")
+  if(EXISTS \"\${BUNDLE_SHARE_DIR}\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUNDLE_SHARE_DIR}\" \"${CMAKE_BINARY_DIR}/intermediates_do_not_run/share\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUNDLE_SHARE_DIR}\" \"${CMAKE_BINARY_DIR}/share\")
   endif()
-  if(EXISTS \"${BUILD_BUNDLE_DIR}/lib\")
-    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/lib\" \"\${CMAKE_BINARY_DIR}/intermediates_do_not_run/lib\")
-    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUILD_BUNDLE_DIR}/lib\" \"\${INSTALL_BUNDLE_DATA_DIR}/lib\")
+  if(EXISTS \"\${BUNDLE_LIB_DIR}\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUNDLE_LIB_DIR}\" \"${CMAKE_BINARY_DIR}/intermediates_do_not_run/lib\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUNDLE_LIB_DIR}\" \"${CMAKE_BINARY_DIR}/lib\")
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink \"\${BUNDLE_LIB_DIR}\" \"\${CMAKE_INSTALL_PREFIX}/data/lib\")
   endif()
 " COMPONENT Runtime)
 

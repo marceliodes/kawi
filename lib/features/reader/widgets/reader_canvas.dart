@@ -121,8 +121,9 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       newListener?.itemPositions.addListener(_onPositionsChanged);
     }
 
-    if (widget.chapterIndex != oldWidget.chapterIndex) {
-      final newIndex = widget.chapterIndex ?? 0;
+    if (widget.chapterIndex != null &&
+        widget.chapterIndex != _currentChapterIndex) {
+      final newIndex = widget.chapterIndex!;
       _currentChapterIndex = newIndex;
       _currentPageIndexInChapter = 0;
       if (widget.settings.isPaginated) {
@@ -219,12 +220,40 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     final positions = _effectiveItemPositionsListener.itemPositions.value;
     if (positions.isEmpty) return;
 
-    final visible = positions
-        .where((pos) => pos.itemTrailingEdge > 0.0)
+    // In EPUB continuous mode, each item is an entire chapter.
+    // Determine visibleChapterIndex by finding the chapter item that straddles the
+    // upper viewport reading line (e.g., pos.itemLeadingEdge <= 0.3 && pos.itemTrailingEdge > 0.1),
+    // falling back to the item with the smallest non-negative itemLeadingEdge if none straddles 0.1.
+    final straddling = positions
+        .where((pos) => pos.itemLeadingEdge <= 0.3 && pos.itemTrailingEdge > 0.1)
         .toList();
-    final sorted = (visible.isNotEmpty ? visible : positions.toList())
-      ..sort((a, b) => a.itemLeadingEdge.compareTo(b.itemLeadingEdge));
-    final visibleChapterIndex = sorted.first.index;
+
+    ItemPosition activePos;
+    if (straddling.isNotEmpty) {
+      final straddlingReadingLine = straddling.where(
+        (pos) => pos.itemLeadingEdge <= 0.1 && pos.itemTrailingEdge > 0.1,
+      ).toList();
+      if (straddlingReadingLine.isNotEmpty) {
+        activePos = straddlingReadingLine.first;
+      } else {
+        straddling.sort((a, b) => b.itemLeadingEdge.compareTo(a.itemLeadingEdge));
+        activePos = straddling.first;
+      }
+    } else {
+      final nonNegative = positions
+          .where((pos) => pos.itemLeadingEdge >= 0.0)
+          .toList()
+        ..sort((a, b) => a.itemLeadingEdge.compareTo(b.itemLeadingEdge));
+      if (nonNegative.isNotEmpty) {
+        activePos = nonNegative.first;
+      } else {
+        final sorted = positions.toList()
+          ..sort((a, b) => b.itemTrailingEdge.compareTo(a.itemTrailingEdge));
+        activePos = sorted.first;
+      }
+    }
+
+    final visibleChapterIndex = activePos.index;
 
     if (visibleChapterIndex != _currentChapterIndex) {
       _currentChapterIndex = visibleChapterIndex;
