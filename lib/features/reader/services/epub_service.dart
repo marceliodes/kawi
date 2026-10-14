@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
 
-import 'package:epubx/epubx.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/document_models.dart';
@@ -180,67 +179,113 @@ class EpubService implements DocumentService {
     }
     final bytes = await file.readAsBytes();
     final bookRef = await EpubParser.openBook(bytes);
-    final chapters = await bookRef.getChapters();
-    if (chapters.isEmpty) return const {};
 
-    if (requestedIndex < 0 || requestedIndex >= chapters.length) {
+    // Resolve the single requested spine/chapter HTML without eagerly unpacking others
+    final chapters = await bookRef.getChapters();
+    String? html;
+
+    if (chapters.isNotEmpty &&
+        requestedIndex >= 0 &&
+        requestedIndex < chapters.length) {
+      html = await chapters[requestedIndex].readHtmlContent();
+    } else {
+      final spineItems = bookRef.Schema?.Package?.Spine?.Items ?? const [];
+      if (requestedIndex >= 0 && requestedIndex < spineItems.length) {
+        final idRef = spineItems[requestedIndex].IdRef;
+        final manifestItem = bookRef.Schema?.Package?.Manifest?.Items
+            ?.where((m) => m.Id == idRef)
+            .firstOrNull;
+        if (manifestItem != null && manifestItem.Href != null) {
+          final href = manifestItem.Href!;
+          final cleanHref = href.split('?').first.split('#').first;
+          final decoded = Uri.decodeFull(cleanHref);
+          final base = p.basename(decoded).toLowerCase();
+          final htmlFiles = bookRef.Content?.Html ?? const {};
+          final fileRef = htmlFiles[href] ??
+              htmlFiles[cleanHref] ??
+              htmlFiles[decoded] ??
+              htmlFiles.values.where((f) =>
+                  f.FileName == href ||
+                  f.FileName == cleanHref ||
+                  f.FileName == decoded ||
+                  (f.FileName != null &&
+                      p.basename(f.FileName!).toLowerCase() == base)).firstOrNull;
+          if (fileRef != null) {
+            html = await fileRef.readContentAsText();
+          }
+        }
+      }
+    }
+
+    if (html == null || html.trim().isEmpty) {
       return {requestedIndex: const <DocumentNode>[]};
     }
 
-    final result = <int, List<DocumentNode>>{};
-
-    // Parse all chapters if <= 50, otherwise parse a window around the requested chapter
-    final int startIdx;
-    final int endIdx;
-    if (chapters.length <= 50) {
-      startIdx = 0;
-      endIdx = chapters.length;
-    } else {
-      startIdx = (requestedIndex - 2).clamp(0, chapters.length);
-      endIdx = (requestedIndex + 4).clamp(0, chapters.length);
-    }
-
     final imageRefs = bookRef.Content?.Images;
-    for (var i = startIdx; i < endIdx; i++) {
-      result[i] = await _parseChapterContent(chapters[i], imageRefs);
-    }
-
+    final result = <int, List<DocumentNode>>{};
+    result[requestedIndex] = await _parseChapterContent(html, imageRefs);
     return result;
   }
 
   static Future<List<DocumentNode>> _parseChapterContent(
-    EpubChapterRef chapter,
+    String html,
     Map<String, dynamic>? imageRefs,
   ) async {
-    final html = await chapter.readHtmlContent();
-
-    // Lazy load only images referenced in this chapter's html
+    // Lazy-decompress ONLY images directly referenced inside this single chapter's HTML
     final imageBytesMap = <String, List<int>>{};
     if (imageRefs != null && imageRefs.isNotEmpty) {
-      final lowerHtml = html.toLowerCase();
-      for (final entry in imageRefs.entries) {
-        final key = entry.key;
-        final filename = p.basename(key);
-        final decodedKey = Uri.decodeFull(key);
-        final decodedFilename = p.basename(decodedKey);
+      final imageRegex = RegExp(
+        r'''(?:src|href|xlink:href)\s*=\s*["']([^"']+\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?[^"']*)?)["']''',
+        caseSensitive: false,
+      );
 
-        final isReferenced = lowerHtml.contains(key.toLowerCase()) ||
-            lowerHtml.contains(filename.toLowerCase()) ||
-            lowerHtml.contains(decodedKey.toLowerCase()) ||
-            lowerHtml.contains(decodedFilename.toLowerCase());
+      final matches = imageRegex.allMatches(html);
+      if (matches.isNotEmpty) {
+        final referencedSrcs = <String>{};
+        for (final m in matches) {
+          final src = m.group(1);
+          if (src != null && src.trim().isNotEmpty) {
+            referencedSrcs.add(src.trim());
+          }
+        }
 
-        if (isReferenced) {
-          try {
-            final imgBytes = await entry.value.readContentAsBytes();
-            imageBytesMap[key] = imgBytes;
-            imageBytesMap[filename] = imgBytes;
-            if (decodedKey != key) {
-              imageBytesMap[decodedKey] = imgBytes;
+        for (final src in referencedSrcs) {
+          final clean = src.split('?').first.split('#').first.trim();
+          final decoded = Uri.decodeFull(clean);
+          final base = p.basename(decoded);
+          final lowerBase = base.toLowerCase();
+          final lowerClean = clean.toLowerCase();
+          final lowerDecoded = decoded.toLowerCase();
+
+          dynamic matchedRef = imageRefs[src] ??
+              imageRefs[clean] ??
+              imageRefs[decoded];
+
+          if (matchedRef == null) {
+            for (final entry in imageRefs.entries) {
+              final key = entry.key;
+              final lowerKey = key.toLowerCase();
+              if (lowerKey == lowerClean ||
+                  lowerKey == lowerDecoded ||
+                  lowerKey.endsWith('/$lowerClean') ||
+                  lowerKey.endsWith('/$lowerDecoded') ||
+                  p.basename(key).toLowerCase() == lowerBase) {
+                matchedRef = entry.value;
+                break;
+              }
             }
-            if (decodedFilename != filename) {
-              imageBytesMap[decodedFilename] = imgBytes;
-            }
-          } catch (_) {}
+          }
+
+          if (matchedRef != null) {
+            try {
+              final bytes = await matchedRef.readContentAsBytes();
+              imageBytesMap[src] = bytes;
+              imageBytesMap[clean] = bytes;
+              imageBytesMap[decoded] = bytes;
+              imageBytesMap[base] = bytes;
+              imageBytesMap[lowerBase] = bytes;
+            } catch (_) {}
+          }
         }
       }
     }

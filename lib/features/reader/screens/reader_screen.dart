@@ -20,6 +20,7 @@ import '../widgets/reader_canvas.dart';
 import '../widgets/toc_drawer.dart';
 import '../widgets/typography_settings_sheet.dart';
 import '../widgets/tts_control_bar.dart';
+import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/providers/voice_manager_provider.dart';
 import '../../tts/screens/voice_manager_screen.dart';
@@ -56,6 +57,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   double _currentScrollOffset = 0.0;
   String? _currentChapterTitle;
   bool _isRestoring = false;
+  bool _isUserDesyncedFromTts = false;
+  int? _speakingChapterIndex;
+  int? _speakingPageIndexInChapter;
 
   double? _currentColumnWidth;
   double? _currentColumnHeight;
@@ -352,8 +356,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   }
 
   Future<void> _startTts({String? fromSentence}) async {
+    if (fromSentence == null) {
+      final visibleSnippet =
+          _canvasKey.currentState?.getFirstVisibleTextSnippet();
+      if (visibleSnippet != null && visibleSnippet.trim().isNotEmpty) {
+        fromSentence = visibleSnippet.trim();
+        // ignore: avoid_print
+        print('>>> [TTS UI] _startTts resolved visible snippet: "$fromSentence" <<<');
+      }
+    }
+
     // ignore: avoid_print
     print('>>> [TTS UI] _startTts called (fromSentence: ${fromSentence != null}) <<<');
+    setState(() {
+      _isUserDesyncedFromTts = false;
+    });
     try {
       if (widget.document.isEpub) {
         final settings = ref.read(readerSettingsProvider);
@@ -419,16 +436,55 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
         if (fromSentence != null && fromSentence.trim().isNotEmpty) {
           final needle = fromSentence.replaceAll(RegExp(r'\s+'), ' ').trim();
-          final words = needle.split(' ').where((w) => w.isNotEmpty).toList();
-          if (words.isNotEmpty) {
-            final needlePattern = RegExp(
-              words.map(RegExp.escape).join(r'\s+'),
-              caseSensitive: false,
-            );
-            final match = needlePattern.firstMatch(textToRead);
-            if (match != null) {
-              textToRead = textToRead.substring(match.start);
+          final words = needle
+              .replaceAll(RegExp(r'[“”"’‘\.,;:!?\(\)\[\]]'), ' ')
+              .split(RegExp(r'\s+'))
+              .where((w) => w.length > 1)
+              .toList();
+
+          int matchStart = -1;
+
+          // 1. Direct contains check
+          final directIdx = textToRead.indexOf(needle);
+          if (directIdx != -1) {
+            matchStart = directIdx;
+          } else {
+            // 2. Normalized word sequence match (first 3-6 significant words)
+            final searchWords = words.length >= 3 ? words.take(5).toList() : words;
+            if (searchWords.isNotEmpty) {
+              final pattern = RegExp(
+                searchWords.map(RegExp.escape).join(r'[\s\S]{1,15}?'),
+                caseSensitive: false,
+              );
+              final match = pattern.firstMatch(textToRead);
+              if (match != null) {
+                var sStart = match.start;
+                while (sStart > 0 &&
+                    textToRead[sStart - 1] != '\n' &&
+                    textToRead[sStart - 1] != '.' &&
+                    textToRead[sStart - 1] != '!' &&
+                    textToRead[sStart - 1] != '?') {
+                  sStart--;
+                }
+                while (sStart < match.start &&
+                    (textToRead[sStart].trim().isEmpty ||
+                        textToRead[sStart] == '.' ||
+                        textToRead[sStart] == '"' ||
+                        textToRead[sStart] == '”' ||
+                        textToRead[sStart] == '’' ||
+                        textToRead[sStart] == "'")) {
+                  sStart++;
+                }
+                matchStart = sStart;
+              }
             }
+          }
+
+          if (matchStart != -1 && matchStart < textToRead.length) {
+            textToRead = textToRead.substring(matchStart).trim();
+            // ignore: avoid_print
+            print(
+                '>>> [TTS UI] _startTts sliced textToRead to ${textToRead.length} chars (starts with: "${textToRead.substring(0, textToRead.length.clamp(0, 50))}") <<<');
           }
         } else if (!settings.isPaginated) {
           // If starting without a selected sentence in continuous mode, start from the active reading anchor if on this chapter
@@ -684,6 +740,25 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     final isTtsPlaying = ref.watch(ttsProvider.select((s) => s.isPlaying));
     final isEpub = widget.document.isEpub;
 
+    // Auto-advance to next chapter when TTS completes the current chapter
+    ref.listen<TtsState>(ttsStateProvider, (previous, next) {
+      if (previous?.playbackState != TtsPlaybackState.completed &&
+          next.playbackState == TtsPlaybackState.completed) {
+        if (_isTtsBarVisible) {
+          final totalChapters =
+              widget.document.pageCount > 0 ? widget.document.pageCount : 1;
+          if (_currentChapterIndex < totalChapters - 1) {
+            _navigateToNextChapter();
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                _startTts();
+              }
+            });
+          }
+        }
+      }
+    });
+
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: theme.bgCanvas,
@@ -762,18 +837,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
               // Main Reading Canvas
               Positioned.fill(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 150),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeOut,
-                  transitionBuilder: (child, animation) =>
-                      FadeTransition(opacity: animation, child: child),
-                  child: KeyedSubtree(
-                    key: ValueKey(
-                      '${widget.document.id}_${isEpub ? (settings.isPaginated ? _currentPageIndex : "continuous") : "pdf"}',
-                    ),
-                    child: ReaderCanvas(
-                      key: isEpub ? null : _canvasKey,
+                child: KeyedSubtree(
+                  key: ValueKey(
+                    '${widget.document.id}_${isEpub ? (settings.isPaginated ? "paginated" : "continuous") : "pdf"}',
+                  ),
+                  child: ReaderCanvas(
+                      key: _canvasKey,
                       filePath: widget.document.filePath,
                       pageCount: widget.document.pageCount,
                       settings: settings,
@@ -808,10 +877,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                           _debounceSaveProgress(newChapterIndex, 0.0);
                         }
                       },
+                      isUserDesyncedFromTts: _isUserDesyncedFromTts,
+                      onUserNavigated: () {
+                        if (!_isUserDesyncedFromTts) {
+                          setState(() {
+                            _isUserDesyncedFromTts = true;
+                          });
+                        }
+                      },
+                      onSpeakingPageDiscovered: (ch, page) {
+                        _speakingChapterIndex = ch;
+                        _speakingPageIndexInChapter = page;
+                      },
                     ),
                   ),
                 ),
-              ),
 
               // Auto-hiding Top Navigation Bar
               Positioned(
@@ -829,6 +909,54 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                   ),
                 ),
               ),
+
+              // Jump to speaking sentence chip
+              if (_isUserDesyncedFromTts && isTtsPlaying)
+                Positioned(
+                  bottom: Spacing.xl + MediaQuery.paddingOf(context).bottom + 76,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: ActionChip(
+                      avatar: PhosphorIcon(
+                        PhosphorIconsLight.arrowBendUpLeft,
+                        size: 16,
+                        color: theme.accent,
+                      ),
+                      label: const Text('Jump to speaking sentence'),
+                      onPressed: () {
+                        setState(() {
+                          _isUserDesyncedFromTts = false;
+                        });
+                        if (_speakingChapterIndex != null &&
+                            _speakingChapterIndex != _currentChapterIndex) {
+                          setState(() {
+                            _currentChapterIndex = _speakingChapterIndex!;
+                            _currentPageIndex = _speakingChapterIndex!;
+                            _currentPageIndexInChapter =
+                                _speakingPageIndexInChapter ?? 0;
+                          });
+                          _resolveChapterTitle(_currentChapterIndex);
+                          _debounceSaveProgress(_currentChapterIndex, 0.0);
+                        } else if (_speakingPageIndexInChapter != null &&
+                            _speakingPageIndexInChapter !=
+                                _currentPageIndexInChapter) {
+                          setState(() {
+                            _currentPageIndexInChapter =
+                                _speakingPageIndexInChapter!;
+                          });
+                          if (_pageController.hasClients) {
+                            _pageController.animateToPage(
+                              _speakingPageIndexInChapter!,
+                              duration: const Duration(milliseconds: 250),
+                              curve: Curves.easeInOut,
+                            );
+                          }
+                        }
+                      },
+                    ),
+                  ),
+                ),
 
               // Floating Media Control Bar for TTS
               if (_isTtsBarVisible || isTtsPlaying)

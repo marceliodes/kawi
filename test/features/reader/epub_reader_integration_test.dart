@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +23,18 @@ import 'package:kawi/features/tts/providers/tts_provider.dart';
 import 'package:kawi/features/tts/providers/voice_manager_provider.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+
+final _kValid1x1Png = Uint8List.fromList(const [
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+  0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+  0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+  0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+  0x42, 0x60, 0x82,
+]);
 
 class _TestReaderSettingsNotifier extends ReaderSettingsNotifier {
   final ReaderSettings initialSettings;
@@ -54,11 +67,13 @@ class _MockEpubTtsNotifier extends TtsStateNotifier {
     required TtsPlaybackState playbackState,
     required String currentSentenceText,
     String currentWord = '',
+    int? currentSentenceIndex,
   }) {
     state = state.copyWith(
       playbackState: playbackState,
       currentSentenceText: currentSentenceText,
       currentWord: currentWord,
+      currentSentenceIndex: currentSentenceIndex ?? state.currentSentenceIndex,
     );
   }
 }
@@ -494,6 +509,422 @@ void main() {
       // Verify index-stable ScrollablePositionedList renders chapters continuously
       expect(find.byType(ScrollablePositionedList), findsOneWidget);
       expect(find.text('Chapter 1'), findsWidgets);
+    });
+
+    test('EpubService lazy-parses only requested initial chapter in <250ms', () async {
+      if (!epubFile.existsSync()) return;
+
+      final stopwatch = Stopwatch()..start();
+      final nodes = await EpubService.instance.extractChapterNodes(epubFile.path, 1);
+      stopwatch.stop();
+
+      expect(nodes, isNotEmpty);
+      expect(stopwatch.elapsedMilliseconds, lessThan(250));
+    });
+
+    testWidgets('TTS chapter completion automatically transitions to speak Chapter N + 1',
+        (tester) async {
+      if (!epubFile.existsSync() || sampleNodes.isEmpty) return;
+
+      final mockTtsNotifier = _MockEpubTtsNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockTtsNotifier),
+          documentChapterNodesProvider.overrideWith(
+            (ref, arg) => Future.value(sampleNodes),
+          ),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      // Start TTS on chapter 0
+      final playButton = find.byTooltip('Read Aloud (TTS)');
+      expect(playButton, findsOneWidget);
+      await tester.tap(playButton);
+      await tester.pumpAndSettle();
+
+      expect(mockTtsNotifier.speakCallCount, 1);
+
+      // Now simulate TTS completing chapter 0
+      mockTtsNotifier.updateTtsState(
+        playbackState: TtsPlaybackState.completed,
+        currentSentenceText: '',
+      );
+      await tester.pumpAndSettle();
+
+      // It should have automatically triggered speak for Chapter 1
+      expect(mockTtsNotifier.speakCallCount, 2);
+    });
+
+    testWidgets('User manual navigation desyncs TTS and displays Jump to speaking sentence chip',
+        (tester) async {
+      if (!epubFile.existsSync() || sampleNodes.isEmpty) return;
+
+      final mockTtsNotifier = _MockEpubTtsNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockTtsNotifier),
+          documentChapterNodesProvider.overrideWith(
+            (ref, arg) => Future.value(sampleNodes),
+          ),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      // Start TTS
+      final playButton = find.byTooltip('Read Aloud (TTS)');
+      await tester.tap(playButton);
+      await tester.pumpAndSettle();
+
+      // Initially synced: jump chip should not be visible
+      expect(find.text('Jump to speaking sentence'), findsNothing);
+
+      // User manually navigates to next page using right arrow
+      final rightArrow = find.byIcon(PhosphorIconsLight.caretRight);
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+
+      // Now user is desynced: "Jump to speaking sentence" chip appears
+      expect(find.text('Jump to speaking sentence'), findsOneWidget);
+
+      // Tapping "Jump to speaking sentence" clears desync and navigates back
+      await tester.tap(find.text('Jump to speaking sentence'));
+      await tester.pumpAndSettle();
+
+      // Chip disappears once synced
+      expect(find.text('Jump to speaking sentence'), findsNothing);
+    });
+
+    testWidgets(
+        'Auto-page-turn in Paginated Mode skips standalone image pages to follow TTS sentence',
+        (tester) async {
+      final mockTts = _MockEpubTtsNotifier();
+      final pageController = PageController();
+      int discoveredChapter = -1;
+      int discoveredPage = -1;
+      bool userDesynced = false;
+
+      const chunk0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 0,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 32,
+        nodes: [
+          ParagraphNode([TextSegment('Bracing myself, I began to read.')]),
+        ],
+      );
+
+      final chunk1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 0,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 0,
+        nodes: [
+          ImageNode(_kValid1x1Png, 'DIARY'),
+        ],
+      );
+
+      const chunk2 = PageChunk(
+        pageIndexInChapter: 2,
+        chapterIndex: 0,
+        startParagraphIndex: 2,
+        startCharOffset: 0,
+        endParagraphIndex: 2,
+        endCharOffset: 38,
+        nodes: [
+          ParagraphNode([TextSegment('I’ve decided to start keeping a diary.')]),
+        ],
+      );
+
+      final chunks = [chunk0, chunk1, chunk2];
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockTts),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: ReaderCanvas(
+                  filePath: 'test.epub',
+                  pageCount: 1,
+                  settings: const ReaderSettings(
+                    mode: ReadingMode.paginated,
+                    fontSize: 16.0,
+                    lineHeight: 1.5,
+                    contentMaxWidth: 600.0,
+                  ),
+                  initialPageIndex: 0,
+                  initialChapterIndex: 0,
+                  initialScrollOffset: 0.0,
+                  pageController: pageController,
+                  onPageChanged: (_, _) {},
+                  onToggleChrome: () {},
+                  epubChunks: chunks,
+                  isEpub: true,
+                  chapterIndex: 0,
+                  pageIndexInChapter: 0,
+                  isUserDesyncedFromTts: userDesynced,
+                  onUserNavigated: () {
+                    userDesynced = true;
+                  },
+                  onSpeakingPageDiscovered: (ch, page) {
+                    discoveredChapter = ch;
+                    discoveredPage = page;
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(pageController.page?.round(), 0);
+
+      // Now TTS advances across the DIARY image page (Page 1) to sentence on Page 2
+      mockTts.updateTtsState(
+        playbackState: TtsPlaybackState.playing,
+        currentSentenceText: 'I’ve decided to start keeping a diary.',
+        currentSentenceIndex: 22,
+      );
+
+      // Pump frames for auto-page-turn animation
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+
+      // Viewport has turned directly to page 2 (skipping page 1 image)
+      expect(pageController.page?.round(), 2);
+      expect(discoveredChapter, 0);
+      expect(discoveredPage, 2);
+      // Programmatic auto-turn MUST NOT set userDesynced to true
+      expect(userDesynced, isFalse);
+    });
+
+    testWidgets(
+        'Continuous Mode auto-scrolls past ImageNode to highlighted sentence without desyncing user',
+        (tester) async {
+      final mockTts = _MockEpubTtsNotifier();
+      bool userDesynced = false;
+
+      final nodes = <DocumentNode>[
+        const ParagraphNode([TextSegment('Bracing myself, I began to read.')]),
+        ImageNode(_kValid1x1Png, 'DIARY'),
+        const ParagraphNode([TextSegment('I’ve decided to start keeping a diary.')]),
+      ];
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockTts),
+          documentChapterNodesProvider.overrideWith((ref, arg) async => nodes),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: ReaderCanvas(
+                  filePath: 'test.epub',
+                  pageCount: 1,
+                  settings: const ReaderSettings(
+                    fontSize: 16.0,
+                    lineHeight: 1.5,
+                    contentMaxWidth: 600.0,
+                  ),
+                  initialPageIndex: 0,
+                  initialChapterIndex: 0,
+                  initialScrollOffset: 0.0,
+                  pageController: PageController(),
+                  onPageChanged: (_, _) {},
+                  onToggleChrome: () {},
+                  epubNodes: nodes,
+                  isEpub: true,
+                  chapterIndex: 0,
+                  pageIndexInChapter: 0,
+                  isUserDesyncedFromTts: userDesynced,
+                  onUserNavigated: () {
+                    userDesynced = true;
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Play sentence 1 above the image
+      mockTts.updateTtsState(
+        playbackState: TtsPlaybackState.playing,
+        currentSentenceText: 'Bracing myself, I began to read.',
+        currentSentenceIndex: 21,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pumpAndSettle();
+
+      expect(userDesynced, isFalse);
+
+      // Now play sentence 2 past the image
+      mockTts.updateTtsState(
+        playbackState: TtsPlaybackState.playing,
+        currentSentenceText: 'I’ve decided to start keeping a diary.',
+        currentSentenceIndex: 22,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pumpAndSettle();
+
+      // Programmatic scroll to sentence below image MUST NOT set userDesynced
+      expect(userDesynced, isFalse);
+      expect(find.textContaining('I’ve decided to start keeping a diary.'), findsOneWidget);
+    });
+
+    testWidgets('ReaderCanvas getFirstVisibleTextSnippet retrieves visible sentence in paginated mode',
+        (tester) async {
+      final canvasKey = GlobalKey<ReaderCanvasState>();
+      final pageController = PageController();
+
+      final chunks = [
+        PageChunk(
+          pageIndexInChapter: 0,
+          chapterIndex: 0,
+          startParagraphIndex: 0,
+          startCharOffset: 0,
+          endParagraphIndex: 0,
+          endCharOffset: 0,
+          nodes: [
+            ImageNode(_kValid1x1Png, 'STANDALONE COVER'),
+          ],
+        ),
+        const PageChunk(
+          pageIndexInChapter: 1,
+          chapterIndex: 0,
+          startParagraphIndex: 1,
+          startCharOffset: 0,
+          endParagraphIndex: 1,
+          endCharOffset: 45,
+          nodes: [
+            ParagraphNode([TextSegment('It was the best of times, it was the worst of times.')]),
+          ],
+        ),
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: ReaderCanvas(
+                  key: canvasKey,
+                  filePath: 'test.epub',
+                  pageCount: 1,
+                  settings: const ReaderSettings(
+                    mode: ReadingMode.paginated,
+                    fontSize: 16.0,
+                    lineHeight: 1.5,
+                    contentMaxWidth: 600.0,
+                  ),
+                  initialPageIndex: 0,
+                  initialChapterIndex: 0,
+                  initialScrollOffset: 0.0,
+                  pageController: pageController,
+                  onPageChanged: (_, _) {},
+                  onToggleChrome: () {},
+                  epubChunks: chunks,
+                  isEpub: true,
+                  chapterIndex: 0,
+                  pageIndexInChapter: 0,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // On Page 0 (standalone image), getFirstVisibleTextSnippet skips to page 1 text
+      final snippet = canvasKey.currentState?.getFirstVisibleTextSnippet();
+      expect(snippet, isNotNull);
+      expect(snippet, contains('It was the best of times'));
     });
   });
 }

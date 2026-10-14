@@ -46,6 +46,10 @@ class EpubParser {
   }
 
   /// Parses raw EPUB binary [bytes] into a fully-unpacked [EpubBook].
+  ///
+  /// Deprecated: Do not use on initial chapter/book open to prevent eager
+  /// decompression of all chapters and images. Use [openBook] and lazy extraction instead.
+  @Deprecated('Use openBook for lazy loading without eager decompression')
   static Future<EpubBook> parseBook(Uint8List bytes) {
     return EpubReader.readBook(bytes);
   }

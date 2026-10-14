@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,6 +43,9 @@ class ReaderCanvas extends ConsumerStatefulWidget {
     this.onPreviousChapter,
     this.onEpubPageChanged,
     this.onChapterChanged,
+    this.isUserDesyncedFromTts = false,
+    this.onUserNavigated,
+    this.onSpeakingPageDiscovered,
   });
 
   final String filePath;
@@ -68,6 +73,12 @@ class ReaderCanvas extends ConsumerStatefulWidget {
   final void Function(int chapterIndex, int pageIndexInChapter)? onEpubPageChanged;
   final ValueChanged<int>? onChapterChanged;
 
+  // Decoupled TTS & Navigation properties
+  final bool isUserDesyncedFromTts;
+  final VoidCallback? onUserNavigated;
+  final void Function(int chapterIndex, int pageIndexInChapter)?
+      onSpeakingPageDiscovered;
+
   @override
   ConsumerState<ReaderCanvas> createState() => ReaderCanvasState();
 }
@@ -85,6 +96,9 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   List<PageChunk> _currentChapterPages = const [];
   PaginationParams? _lastPaginationParams;
 
+  bool _isProgrammaticNavigation = false;
+  Timer? _prewarmTimer;
+
   ItemScrollController get _effectiveItemScrollController =>
       widget.itemScrollController ??
       (_internalItemScrollController ??= ItemScrollController());
@@ -92,6 +106,139 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   ItemPositionsListener get _effectiveItemPositionsListener =>
       widget.itemPositionsListener ??
       (_internalItemPositionsListener ??= ItemPositionsListener.create());
+
+  void _schedulePrewarmAdjacentChapters() {
+    _prewarmTimer?.cancel();
+    _prewarmTimer = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        _prewarmAdjacentChapters();
+      }
+    });
+  }
+
+  void _setProgrammaticScroll(bool isProg) {
+    _isProgrammaticNavigation = isProg;
+  }
+
+  final Set<_EpubScopedNodeWidgetState> _activeNodeStates = {};
+
+  void _registerNodeState(_EpubScopedNodeWidgetState state) {
+    _activeNodeStates.add(state);
+  }
+
+  void _unregisterNodeState(_EpubScopedNodeWidgetState state) {
+    _activeNodeStates.remove(state);
+  }
+
+  /// Returns the first visible sentence or text snippet on screen for TTS initialization.
+  String? getFirstVisibleTextSnippet() {
+    if (widget.settings.isPaginated) {
+      if (_currentChapterPages.isEmpty) return null;
+      final startPage = _currentPageIndexInChapter.clamp(
+        0,
+        _currentChapterPages.length - 1,
+      );
+      for (var pageIdx = startPage; pageIdx < _currentChapterPages.length; pageIdx++) {
+        final chunk = _currentChapterPages[pageIdx];
+        for (final node in chunk.nodes) {
+          if (node is ParagraphNode || node is HeadingNode) {
+            final text = node.toPlainText().trim();
+            if (text.isNotEmpty && TtsTextNormalizer.hasAlphanumeric(text)) {
+              final sentences = TtsTextNormalizer.extractSanitizedSentenceList(text);
+              return sentences.isNotEmpty ? sentences.first : text;
+            }
+          }
+        }
+      }
+      return null;
+    } else {
+      // Continuous Mode: Inspect rendered _EpubScopedNodeWidgets
+      final visibleCandidates =
+          <({_EpubScopedNodeWidgetState state, double dy, double bottomDy})>[];
+
+      for (final nodeState in _activeNodeStates) {
+        if (!nodeState.mounted) continue;
+        if (nodeState.widget.chapterIndex != null &&
+            nodeState.widget.chapterIndex != _currentChapterIndex) {
+          continue;
+        }
+        final node = nodeState.widget.node;
+        if (node is! ParagraphNode && node is! HeadingNode) continue;
+        final renderBox = nodeState.context.findRenderObject() as RenderBox?;
+        if (renderBox == null || !renderBox.hasSize) continue;
+        try {
+          final dy = renderBox.localToGlobal(Offset.zero).dy;
+          final bottomDy = dy + renderBox.size.height;
+          if (bottomDy >= 60.0) {
+            visibleCandidates.add((state: nodeState, dy: dy, bottomDy: bottomDy));
+          }
+        } catch (_) {}
+      }
+
+      if (visibleCandidates.isEmpty) {
+        for (final nodeState in _activeNodeStates) {
+          if (!nodeState.mounted) continue;
+          final node = nodeState.widget.node;
+          if (node is! ParagraphNode && node is! HeadingNode) continue;
+          final renderBox = nodeState.context.findRenderObject() as RenderBox?;
+          if (renderBox == null || !renderBox.hasSize) continue;
+          try {
+            final dy = renderBox.localToGlobal(Offset.zero).dy;
+            final bottomDy = dy + renderBox.size.height;
+            if (bottomDy >= 60.0) {
+              visibleCandidates.add((state: nodeState, dy: dy, bottomDy: bottomDy));
+            }
+          } catch (_) {}
+        }
+      }
+
+      if (visibleCandidates.isEmpty) {
+        if (widget.epubNodes != null && widget.epubNodes!.isNotEmpty) {
+          for (final node in widget.epubNodes!) {
+            if (node is ParagraphNode || node is HeadingNode) {
+              final text = node.toPlainText().trim();
+              if (text.isNotEmpty && TtsTextNormalizer.hasAlphanumeric(text)) {
+                final sentences =
+                    TtsTextNormalizer.extractSanitizedSentenceList(text);
+                return sentences.isNotEmpty ? sentences.first : text;
+              }
+            }
+          }
+        }
+        return null;
+      }
+
+      visibleCandidates.sort((a, b) => a.dy.compareTo(b.dy));
+
+      // Find first readable node: either starting below the top bar (dy >= 60.0)
+      // or straddling the top bar with substantial visible height (bottomDy >= 100.0).
+      final matching = visibleCandidates.firstWhere(
+        (c) => (c.dy >= 60.0) || (c.dy < 60.0 && c.bottomDy >= 100.0),
+        orElse: () => visibleCandidates.first,
+      );
+
+      final text = matching.state.widget.node.toPlainText().trim();
+      if (text.isEmpty || !TtsTextNormalizer.hasAlphanumeric(text)) return null;
+
+      final sentences = TtsTextNormalizer.extractSanitizedSentenceList(text);
+      if (sentences.isEmpty) return text;
+
+      // If the node starts above the top bar (dy < 60.0), calculate which sentence
+      // is actually visible in the viewport instead of starting from the hidden top sentence.
+      if (matching.dy < 60.0 && sentences.length > 1) {
+        final totalHeight = matching.bottomDy - matching.dy;
+        if (totalHeight > 0) {
+          final hiddenHeight = 60.0 - matching.dy;
+          final fraction = (hiddenHeight / totalHeight).clamp(0.0, 1.0);
+          final sentenceIdx =
+              (sentences.length * fraction).floor().clamp(0, sentences.length - 1);
+          return sentences[sentenceIdx];
+        }
+      }
+
+      return sentences.first;
+    }
+  }
 
   @override
   void initState() {
@@ -109,7 +256,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _prewarmAdjacentChapters();
+      if (mounted) _schedulePrewarmAdjacentChapters();
     });
   }
 
@@ -141,7 +288,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       final newIndex = widget.chapterIndex!;
       _currentChapterIndex = newIndex;
       _currentPageIndexInChapter = 0;
-      _prewarmAdjacentChapters();
+      _schedulePrewarmAdjacentChapters();
       if (widget.settings.isPaginated) {
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
@@ -172,7 +319,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         widget.pageCount > 0 ? widget.pageCount - 1 : 0,
       );
       _currentPageIndexInChapter = 0;
-      _prewarmAdjacentChapters();
+      _schedulePrewarmAdjacentChapters();
       if (widget.settings.isPaginated) {
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
@@ -193,10 +340,17 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         }
       });
     }
+
+    if (oldWidget.isUserDesyncedFromTts && !widget.isUserDesyncedFromTts) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) scrollSpeakingSentenceIntoView();
+      });
+    }
   }
 
   @override
   void dispose() {
+    _prewarmTimer?.cancel();
     _effectiveItemPositionsListener.itemPositions.removeListener(
       _onPositionsChanged,
     );
@@ -274,12 +428,40 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
     if (visibleChapterIndex != _currentChapterIndex) {
       _currentChapterIndex = visibleChapterIndex;
-      _prewarmAdjacentChapters();
+      _schedulePrewarmAdjacentChapters();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         widget.onChapterChanged?.call(visibleChapterIndex);
         widget.onPageChanged(visibleChapterIndex, 0.0);
       });
+    }
+  }
+
+  void scrollSpeakingSentenceIntoView() {
+    if (!mounted) return;
+    if (widget.settings.isPaginated) {
+      if (widget.pageController.hasClients &&
+          widget.pageController.page?.round() != _currentPageIndexInChapter) {
+        _isProgrammaticNavigation = true;
+        widget.pageController.animateToPage(
+          _currentPageIndexInChapter,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+        ).then((_) {
+          _isProgrammaticNavigation = false;
+        });
+      }
+    } else {
+      if (_effectiveItemScrollController.isAttached) {
+        _isProgrammaticNavigation = true;
+        _effectiveItemScrollController.scrollTo(
+          index: _currentChapterIndex,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+        ).then((_) {
+          _isProgrammaticNavigation = false;
+        });
+      }
     }
   }
 
@@ -293,7 +475,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         _currentChapterIndex = target;
         _currentPageIndexInChapter = 0;
       });
-      _prewarmAdjacentChapters();
+      _schedulePrewarmAdjacentChapters();
       if (widget.settings.isPaginated) {
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
@@ -334,6 +516,9 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   }
 
   void _goToNextPageOrChapter() {
+    if (!_isProgrammaticNavigation) {
+      widget.onUserNavigated?.call();
+    }
     if (_isEpub) {
       if (_currentPageIndexInChapter < _currentChapterPages.length - 1) {
         if (widget.pageController.hasClients) {
@@ -349,7 +534,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           _currentChapterIndex++;
           _currentPageIndexInChapter = 0;
         });
-        _prewarmAdjacentChapters();
+        _schedulePrewarmAdjacentChapters();
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
         }
@@ -368,6 +553,9 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   }
 
   void _goToPreviousPageOrChapter() {
+    if (!_isProgrammaticNavigation) {
+      widget.onUserNavigated?.call();
+    }
     if (_isEpub) {
       if (_currentPageIndexInChapter > 0) {
         if (widget.pageController.hasClients) {
@@ -383,7 +571,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           _currentChapterIndex--;
           _currentPageIndexInChapter = 0;
         });
-        _prewarmAdjacentChapters();
+        _schedulePrewarmAdjacentChapters();
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
         }
@@ -401,57 +589,109 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     }
   }
 
+  int _findTargetPageIndex(List<PageChunk> pages, String currentSentence) {
+    final sentence = currentSentence.trim();
+    if (sentence.isEmpty) return -1;
+    final lowerSentence = sentence.toLowerCase();
+
+    // 1. Direct contains check across all pages
+    for (var i = 0; i < pages.length; i++) {
+      if (pages[i].plainText.toLowerCase().contains(lowerSentence)) {
+        return i;
+      }
+    }
+
+    // 2. Normalized check (collapsing whitespace, quotes, curly apostrophes)
+    final normSentence = sentence
+        .replaceAll(RegExp(r'[’‘]'), "'")
+        .replaceAll(RegExp(r'[“”]'), '"')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .toLowerCase();
+
+    for (var i = 0; i < pages.length; i++) {
+      final normPage = pages[i].plainText
+          .replaceAll(RegExp(r'[’‘]'), "'")
+          .replaceAll(RegExp(r'[“”]'), '"')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .toLowerCase();
+      if (normPage.contains(normSentence)) {
+        return i;
+      }
+    }
+
+    // 3. Word sequence match (first few significant words)
+    final words = normSentence.split(' ').where((w) => w.length > 2).toList();
+    if (words.length >= 2) {
+      final pattern = RegExp(
+        words.take(5).map(RegExp.escape).join(r'\s+'),
+        caseSensitive: false,
+      );
+      for (var i = 0; i < pages.length; i++) {
+        if (pattern.hasMatch(pages[i].plainText)) {
+          return i;
+        }
+      }
+    }
+
+    // 4. Split sentence check across adjacent page boundaries
+    for (var i = 0; i < pages.length - 1; i++) {
+      final pageA = pages[i].plainText.toLowerCase();
+      final pageB = pages[i + 1].plainText.toLowerCase();
+      final combined = '$pageA $pageB';
+      if (combined.contains(lowerSentence)) {
+        final bTrim = pageB.trim();
+        if (bTrim.isNotEmpty &&
+            lowerSentence.contains(bTrim.substring(0, bTrim.length.clamp(0, 15)))) {
+          return i + 1;
+        }
+        return i;
+      }
+    }
+
+    return -1;
+  }
+
   void _checkAutoPageTurn(List<PageChunk> pages, TtsState ttsState) {
     if (!widget.settings.isPaginated || pages.isEmpty || !ttsState.isPlaying) {
+      return;
+    }
+
+    if (widget.isUserDesyncedFromTts) {
       return;
     }
 
     final currentSentence = ttsState.currentSentenceText.trim();
     if (currentSentence.isEmpty) return;
 
-    final currentIdx =
-        _currentPageIndexInChapter.clamp(0, pages.length - 1);
-    final currentPage = pages[currentIdx];
-    final lowerSentence = currentSentence.toLowerCase();
-    final lowerCurrentPage = currentPage.plainText.toLowerCase();
-
-    // If active page already contains this sentence, keep current page
-    if (lowerCurrentPage.contains(lowerSentence)) {
+    final targetPageIndex = _findTargetPageIndex(pages, currentSentence);
+    if (targetPageIndex < 0 || targetPageIndex >= pages.length) {
       return;
     }
 
-    // Check if subsequent pages contain the sentence
-    for (var i = currentIdx + 1; i < pages.length; i++) {
-      if (pages[i].plainText.toLowerCase().contains(lowerSentence)) {
-        if (widget.pageController.hasClients &&
-            widget.pageController.page?.round() != i) {
-          widget.pageController.animateToPage(
-            i,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          );
-        }
-        return;
-      }
-    }
+    widget.onSpeakingPageDiscovered?.call(_currentChapterIndex, targetPageIndex);
 
-    // Handle split sentence between currentIdx and currentIdx + 1:
-    // If the next page contains the active sentence or its continuation, advance to it.
-    final nextIdx = currentIdx + 1;
-    if (nextIdx < pages.length) {
-      final nextPage = pages[nextIdx];
-      final lowerNextPage = nextPage.plainText.toLowerCase().trim();
-      if (lowerNextPage.isNotEmpty &&
-          (lowerSentence.contains(lowerNextPage) || lowerNextPage.contains(lowerSentence)) &&
-          !lowerCurrentPage.contains(lowerSentence)) {
-        if (widget.pageController.hasClients &&
-            widget.pageController.page?.round() != nextIdx) {
-          widget.pageController.animateToPage(
-            nextIdx,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          );
-        }
+    // If targetPageIndex is not current page, animate directly to targetPageIndex,
+    // skipping right over any intermediate image-only pages!
+    if (targetPageIndex != _currentPageIndexInChapter &&
+        !widget.isUserDesyncedFromTts) {
+      if (widget.pageController.hasClients &&
+          widget.pageController.page?.round() != targetPageIndex) {
+        _setProgrammaticScroll(true);
+        widget.pageController.animateToPage(
+          targetPageIndex,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+        ).then((_) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _setProgrammaticScroll(false);
+            }
+          });
+        }).catchError((_) {
+          if (mounted) {
+            _setProgrammaticScroll(false);
+          }
+        });
       }
     }
   }
@@ -468,9 +708,20 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       }
     });
 
-    return Focus(
-      focusNode: _focusNode,
-      autofocus: true,
+    return Listener(
+      onPointerSignal: (event) {
+        if (event is PointerScrollEvent && event.scrollDelta.dy.abs() > 1.0) {
+          widget.onUserNavigated?.call();
+        }
+      },
+      onPointerMove: (event) {
+        if (event.buttons != 0 || event.kind == PointerDeviceKind.touch) {
+          widget.onUserNavigated?.call();
+        }
+      },
+      child: Focus(
+        focusNode: _focusNode,
+        autofocus: true,
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent) {
           if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
@@ -519,8 +770,9 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                 ? _buildPaginatedView(theme)
                 : _buildContinuousView(theme)),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildEpubPaginatedView(
     ReaderThemeData theme,
@@ -825,6 +1077,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           theme: theme,
           baseStyle: baseStyle,
           onPlayFromHere: widget.onPlayFromHere,
+          isUserDesynced: widget.isUserDesyncedFromTts,
+          onProgrammaticScroll: _setProgrammaticScroll,
         );
       },
     );
@@ -838,11 +1092,20 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   }) {
     return _EpubScopedNodeWidget(
       node: node,
+      chapterIndex: _currentChapterIndex,
       baseStyle: baseStyle,
       theme: theme,
       viewportHeight: viewportHeight,
+      isUserDesynced: widget.isUserDesyncedFromTts,
+      onProgrammaticScroll: _setProgrammaticScroll,
+      isContinuous: !widget.settings.isPaginated,
       contextMenuBuilder: (context, editableTextState) {
-        return _buildContextMenu(context, editableTextState, theme);
+        return _buildContextMenu(
+          context,
+          editableTextState,
+          theme,
+          nodeText: node.toPlainText(),
+        );
       },
     );
   }
@@ -877,6 +1140,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
               pageIndex: index,
               settings: widget.settings,
               onPlayFromHere: widget.onPlayFromHere,
+              isUserDesynced: widget.isUserDesyncedFromTts,
+              onProgrammaticScroll: _setProgrammaticScroll,
             ),
           ),
         );
@@ -980,35 +1245,80 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   Widget _buildContextMenu(
     BuildContext context,
     EditableTextState state,
-    ReaderThemeData theme,
-  ) {
+    ReaderThemeData theme, {
+    String? nodeText,
+  }) {
     return _buildReaderContextMenu(
       context,
       state,
       theme,
       onPlayFromHere: widget.onPlayFromHere,
+      nodeText: nodeText,
     );
   }
 }
 
-class _PageContentWidget extends ConsumerWidget {
+class _PageContentWidget extends ConsumerStatefulWidget {
   const _PageContentWidget({
     required this.filePath,
     required this.pageIndex,
     required this.settings,
     this.onPlayFromHere,
+    this.isUserDesynced = false,
+    this.onProgrammaticScroll,
   });
 
   final String filePath;
   final int pageIndex;
   final ReaderSettings settings;
   final ValueChanged<String>? onPlayFromHere;
+  final bool isUserDesynced;
+  final void Function(bool isProgrammatic)? onProgrammaticScroll;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_PageContentWidget> createState() => _PageContentWidgetState();
+}
+
+class _PageContentWidgetState extends ConsumerState<_PageContentWidget> {
+  void _scrollIntoMiddleThird() {
+    if (!mounted || widget.isUserDesynced || widget.settings.isPaginated) return;
+    final ttsState = ref.read(ttsStateProvider);
+    if (!ttsState.isPlaying) return;
+
+    final renderBox = context.findRenderObject();
+    if (renderBox is! RenderBox || !renderBox.hasSize) return;
+
+    final scrollable = Scrollable.maybeOf(context);
+    if (scrollable == null) return;
+
+    final viewportBox = scrollable.context.findRenderObject() as RenderBox?;
+    if (viewportBox == null || !viewportBox.hasSize) return;
+
+    final viewportHeight = viewportBox.size.height;
+    final nodePos = renderBox.localToGlobal(Offset.zero, ancestor: viewportBox);
+    final topInViewport = nodePos.dy;
+    final bottomInViewport = topInViewport + renderBox.size.height;
+
+    if (topInViewport > viewportHeight * 0.55 ||
+        bottomInViewport < viewportHeight * 0.20) {
+      widget.onProgrammaticScroll?.call(true);
+      Scrollable.ensureVisible(
+        context,
+        alignment: 0.35,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+      ).then((_) {
+        widget.onProgrammaticScroll?.call(false);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = ReaderTheme.of(context);
     final pageAsync = ref.watch(
-      documentPageContentProvider((filePath: filePath, pageIndex: pageIndex)),
+      documentPageContentProvider(
+          (filePath: widget.filePath, pageIndex: widget.pageIndex)),
     );
 
     return pageAsync.when(
@@ -1016,7 +1326,7 @@ class _PageContentWidget extends ConsumerWidget {
         padding: const EdgeInsets.symmetric(vertical: Spacing.xl),
         child: Center(
           child: Text(
-            'Loading page ${pageIndex + 1}...',
+            'Loading page ${widget.pageIndex + 1}...',
             style: AppTypography.micro.copyWith(color: theme.textMuted),
           ),
         ),
@@ -1024,13 +1334,29 @@ class _PageContentWidget extends ConsumerWidget {
       error: (err, _) => Padding(
         padding: const EdgeInsets.symmetric(vertical: Spacing.lg),
         child: Text(
-          'Error loading page ${pageIndex + 1}: $err',
+          'Error loading page ${widget.pageIndex + 1}: $err',
           style: AppTypography.body.copyWith(color: theme.textMuted),
         ),
       ),
       data: (content) {
         final text = TtsTextNormalizer.flattenSoftLineBreaks(content.plainText);
-        final isPaginated = settings.isPaginated;
+        final isPaginated = widget.settings.isPaginated;
+
+        final isMatched = ref.watch(
+          ttsStateProvider.select((s) {
+            if (!s.isPlaying && !s.isPaused) return false;
+            final sentence = s.currentSentenceText.trim();
+            if (sentence.isEmpty || text.isEmpty) return false;
+            return text.toLowerCase().contains(sentence.toLowerCase());
+          }),
+        );
+
+        if (isMatched && !widget.isUserDesynced && !isPaginated) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || widget.isUserDesynced) return;
+            _scrollIntoMiddleThird();
+          });
+        }
 
         return Padding(
           padding: EdgeInsets.only(
@@ -1045,7 +1371,7 @@ class _PageContentWidget extends ConsumerWidget {
                   child: Row(
                     children: [
                       Text(
-                        'Page ${pageIndex + 1}',
+                        'Page ${widget.pageIndex + 1}',
                         style: AppTypography.micro.copyWith(
                           color: theme.textMuted,
                           letterSpacing: 0.5,
@@ -1078,9 +1404,9 @@ class _PageContentWidget extends ConsumerWidget {
                   _buildHighlightedTextSpan(
                     text: text,
                     baseStyle: TextStyle(
-                      fontFamily: settings.fontFamily,
-                      fontSize: settings.fontSize,
-                      height: settings.lineHeight,
+                      fontFamily: widget.settings.fontFamily,
+                      fontSize: widget.settings.fontSize,
+                      height: widget.settings.lineHeight,
                       color: theme.textPrimary,
                     ),
                     theme: theme,
@@ -1092,7 +1418,8 @@ class _PageContentWidget extends ConsumerWidget {
                       context,
                       editableTextState,
                       theme,
-                      onPlayFromHere: onPlayFromHere,
+                      onPlayFromHere: widget.onPlayFromHere,
+                      nodeText: text,
                     );
                   },
                 ),
@@ -1189,22 +1516,89 @@ class _PageContentWidget extends ConsumerWidget {
   }
 }
 
+String _extractSentenceAtOffset(String fullText, int offset) {
+  if (fullText.trim().isEmpty) return '';
+  final clamped = offset.clamp(0, fullText.length);
+
+  // Look backward from clamped for sentence boundary
+  var start = 0;
+  for (var i = clamped - 1; i >= 0; i--) {
+    final char = fullText[i];
+    if (char == '\n') {
+      start = i + 1;
+      break;
+    }
+    if ((char == '.' || char == '!' || char == '?') && i + 1 < fullText.length) {
+      var nextIdx = i + 1;
+      while (nextIdx < fullText.length &&
+          (fullText[nextIdx] == '"' ||
+              fullText[nextIdx] == '”' ||
+              fullText[nextIdx] == "'" ||
+              fullText[nextIdx] == '’')) {
+        nextIdx++;
+      }
+      if (nextIdx < fullText.length && RegExp(r'\s').hasMatch(fullText[nextIdx])) {
+        start = nextIdx;
+        while (start < fullText.length && RegExp(r'\s').hasMatch(fullText[start])) {
+          start++;
+        }
+        break;
+      }
+    }
+  }
+
+  // Look forward from clamped for sentence boundary
+  var end = fullText.length;
+  for (var i = clamped; i < fullText.length; i++) {
+    final char = fullText[i];
+    if (char == '\n') {
+      end = i;
+      break;
+    }
+    if (char == '.' || char == '!' || char == '?') {
+      var nextIdx = i + 1;
+      while (nextIdx < fullText.length &&
+          (fullText[nextIdx] == '"' ||
+              fullText[nextIdx] == '”' ||
+              fullText[nextIdx] == "'" ||
+              fullText[nextIdx] == '’')) {
+        nextIdx++;
+      }
+      end = nextIdx;
+      break;
+    }
+  }
+
+  if (start >= end) return fullText.trim();
+  final extracted = fullText.substring(start, end).trim();
+  return extracted.isNotEmpty ? extracted : fullText.trim();
+}
+
 Widget _buildReaderContextMenu(
   BuildContext context,
   EditableTextState state,
   ReaderThemeData theme, {
   ValueChanged<String>? onPlayFromHere,
+  String? nodeText,
 }) {
   final selectedText = state.textEditingValue.selection.textInside(
     state.textEditingValue.text,
   );
+  final fullText = (nodeText != null && nodeText.isNotEmpty)
+      ? nodeText
+      : state.textEditingValue.text;
+  final selectionStart = state.textEditingValue.selection.start;
 
   final items = <ContextMenuButtonItem>[
     if (selectedText.isNotEmpty && onPlayFromHere != null)
       ContextMenuButtonItem(
         label: 'Play from here',
         onPressed: () {
-          onPlayFromHere(selectedText);
+          final sentence = _extractSentenceAtOffset(
+            fullText,
+            selectionStart >= 0 ? selectionStart : 0,
+          );
+          onPlayFromHere(sentence.isNotEmpty ? sentence : selectedText);
           ContextMenuController.removeAny();
         },
       ),
@@ -1254,6 +1648,8 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
   final ReaderThemeData theme;
   final TextStyle baseStyle;
   final ValueChanged<String>? onPlayFromHere;
+  final bool isUserDesynced;
+  final void Function(bool isProgrammatic)? onProgrammaticScroll;
 
   const _ContinuousChapterSectionWidget({
     required this.filePath,
@@ -1264,6 +1660,8 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
     required this.theme,
     required this.baseStyle,
     this.onPlayFromHere,
+    this.isUserDesynced = false,
+    this.onProgrammaticScroll,
   });
 
   @override
@@ -1347,15 +1745,20 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
                     padding: const EdgeInsets.only(bottom: 16.0),
                     child: _EpubScopedNodeWidget(
                       node: node,
+                      chapterIndex: chapterIndex,
                       baseStyle: baseStyle,
                       theme: theme,
                       viewportHeight: columnHeight,
+                      isUserDesynced: isUserDesynced,
+                      onProgrammaticScroll: onProgrammaticScroll,
+                      isContinuous: true,
                       contextMenuBuilder: (ctx, editableTextState) =>
                           _buildReaderContextMenu(
                         ctx,
                         editableTextState,
                         theme,
                         onPlayFromHere: onPlayFromHere,
+                        nodeText: node.toPlainText(),
                       ),
                     ),
                   ),
@@ -1447,34 +1850,157 @@ List<InlineSpan> _buildDefaultSpans(DocumentNode node, TextStyle textStyle) {
   ];
 }
 
-class _EpubScopedNodeWidget extends ConsumerWidget {
+class _EpubScopedNodeWidget extends ConsumerStatefulWidget {
   final DocumentNode node;
+  final int? chapterIndex;
   final TextStyle baseStyle;
   final ReaderThemeData theme;
   final double? viewportHeight;
   final Widget Function(BuildContext, EditableTextState)? contextMenuBuilder;
+  final bool isUserDesynced;
+  final void Function(bool isProgrammatic)? onProgrammaticScroll;
+  final bool isContinuous;
 
   const _EpubScopedNodeWidget({
     required this.node,
+    this.chapterIndex,
     required this.baseStyle,
     required this.theme,
     this.viewportHeight,
     this.contextMenuBuilder,
+    this.isUserDesynced = false,
+    this.onProgrammaticScroll,
+    this.isContinuous = false,
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (node is ImageNode) {
-      final img = node as ImageNode;
+  ConsumerState<_EpubScopedNodeWidget> createState() =>
+      _EpubScopedNodeWidgetState();
+}
+
+class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
+  bool _wasMatched = false;
+  int _lastSentenceIndex = -1;
+  ReaderCanvasState? _parentCanvasState;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final canvas = context.findAncestorStateOfType<ReaderCanvasState>();
+    if (canvas != _parentCanvasState) {
+      _parentCanvasState?._unregisterNodeState(this);
+      _parentCanvasState = canvas;
+      _parentCanvasState?._registerNodeState(this);
+    }
+  }
+
+  @override
+  void dispose() {
+    _parentCanvasState?._unregisterNodeState(this);
+    _parentCanvasState = null;
+    super.dispose();
+  }
+
+  void _scrollToFollowHighlight() {
+    if (!mounted || widget.isUserDesynced || !widget.isContinuous) return;
+
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+
+    final viewportHeight = MediaQuery.maybeOf(context)?.size.height ??
+        widget.viewportHeight ??
+        800.0;
+
+    double dy;
+    try {
+      dy = box.localToGlobal(Offset.zero).dy;
+    } catch (_) {
+      return;
+    }
+    final bottomDy = dy + box.size.height;
+
+    // Calculate the approximate vertical offset of the active sentence within this node
+    final ttsState = ref.read(ttsStateProvider);
+    final paragraphText = widget.node.toPlainText();
+    final activeSentence = ttsState.currentSentenceText.trim();
+
+    double sentenceDy = dy;
+    double sentenceBottomDy = bottomDy;
+    if (paragraphText.isNotEmpty && activeSentence.isNotEmpty) {
+      final idx = paragraphText.indexOf(activeSentence);
+      if (idx >= 0) {
+        final fraction = idx / paragraphText.length;
+        final lenFraction =
+            (activeSentence.length / paragraphText.length).clamp(0.05, 1.0);
+        sentenceDy = dy + (box.size.height * fraction);
+        sentenceBottomDy = sentenceDy + (box.size.height * lenFraction);
+      }
+    }
+
+    if (sentenceDy > viewportHeight * 0.65 ||
+        sentenceBottomDy > viewportHeight - 80 ||
+        sentenceDy < 70) {
+      final scrollable = Scrollable.maybeOf(context);
+      if (scrollable != null && scrollable.position.hasPixels) {
+        final targetOffset = (scrollable.position.pixels +
+                (sentenceDy - viewportHeight * 0.30))
+            .clamp(
+          scrollable.position.minScrollExtent,
+          scrollable.position.maxScrollExtent,
+        );
+        debugPrint(
+            '>>> [TTS AUTO-SCROLL] Scrolling to matched node (dy: $sentenceDy -> targetOffset:$targetOffset)');
+        widget.onProgrammaticScroll?.call(true);
+        scrollable.position.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOutCubic,
+        ).then((_) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              widget.onProgrammaticScroll?.call(false);
+            }
+          });
+        }).catchError((_) {
+          if (mounted) {
+            widget.onProgrammaticScroll?.call(false);
+          }
+        });
+      } else {
+        widget.onProgrammaticScroll?.call(true);
+        Scrollable.ensureVisible(
+          context,
+          alignment: 0.35,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOutCubic,
+        ).then((_) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              widget.onProgrammaticScroll?.call(false);
+            }
+          });
+        }).catchError((_) {
+          if (mounted) {
+            widget.onProgrammaticScroll?.call(false);
+          }
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.node is ImageNode) {
+      final img = widget.node as ImageNode;
       Widget imageWidget = Image.memory(
         img.bytes,
         fit: BoxFit.contain,
         semanticLabel: img.altText,
       );
 
-      if (viewportHeight != null) {
+      if (widget.viewportHeight != null) {
         imageWidget = ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: viewportHeight!),
+          constraints: BoxConstraints(maxHeight: widget.viewportHeight!),
           child: imageWidget,
         );
       }
@@ -1487,61 +2013,75 @@ class _EpubScopedNodeWidget extends ConsumerWidget {
       );
     }
 
-    final paragraphText = node.toPlainText();
+    final paragraphText = widget.node.toPlainText();
+    final ttsState = ref.watch(ttsStateProvider);
+    final isTtsActive = ttsState.isPlaying || ttsState.isPaused;
+    final currentSentenceIndex = ttsState.currentSentenceIndex;
 
-    final isMatched = ref.watch(
-      ttsStateProvider.select((s) {
-        if (!s.isPlaying && !s.isPaused) return false;
-        final sentence = s.currentSentenceText.trim();
-        if (sentence.isEmpty) return false;
-        final plain = paragraphText.trim();
-        if (plain.isEmpty) return false;
-        if (plain.contains(sentence)) return true;
+    final isMatched = isTtsActive && (() {
+      final sentence = ttsState.currentSentenceText.trim();
+      if (sentence.isEmpty) return false;
+      final plain = paragraphText.trim();
+      if (plain.isEmpty) return false;
+      if (plain.contains(sentence)) return true;
 
-        final normPlain = plain.replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
-        final normSentence =
-            sentence.replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
-        if (normPlain == normSentence) return true;
-        if (normPlain.contains(normSentence) ||
-            normSentence.contains(normPlain)) {
-          return true;
-        }
-        return false;
-      }),
-    );
+      final normPlain = plain.replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+      final normSentence =
+          sentence.replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+      if (normPlain == normSentence) return true;
+      if (normPlain.contains(normSentence) ||
+          normSentence.contains(normPlain)) {
+        return true;
+      }
+      return false;
+    })();
 
-    TextStyle effectiveStyle = baseStyle;
-    if (node is HeadingNode) {
+    if (isMatched && !widget.isUserDesynced && widget.isContinuous) {
+      final bool transitionToMatched = !_wasMatched;
+      final bool sentenceIndexChanged = currentSentenceIndex != _lastSentenceIndex;
+      if (transitionToMatched || sentenceIndexChanged) {
+        _wasMatched = true;
+        _lastSentenceIndex = currentSentenceIndex;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollToFollowHighlight();
+        });
+      }
+    } else if (!isMatched) {
+      _wasMatched = false;
+      _lastSentenceIndex = -1;
+    }
+
+    TextStyle effectiveStyle = widget.baseStyle;
+    if (widget.node is HeadingNode) {
       final scale =
-          (1.6 - ((node as HeadingNode).level * 0.1)).clamp(1.15, 1.6);
-      effectiveStyle = baseStyle.copyWith(
-        fontSize: (baseStyle.fontSize ?? 16.0) * scale,
+          (1.6 - ((widget.node as HeadingNode).level * 0.1)).clamp(1.15, 1.6);
+      effectiveStyle = widget.baseStyle.copyWith(
+        fontSize: (widget.baseStyle.fontSize ?? 16.0) * scale,
         fontWeight: FontWeight.bold,
       );
     }
 
     if (!isMatched) {
       return SelectableText.rich(
-        TextSpan(children: _buildDefaultSpans(node, effectiveStyle)),
+        TextSpan(children: _buildDefaultSpans(widget.node, effectiveStyle)),
         textAlign: TextAlign.start,
-        contextMenuBuilder: contextMenuBuilder,
+        contextMenuBuilder: widget.contextMenuBuilder,
       );
     }
 
-    final ttsState = ref.watch(ttsStateProvider);
-
     return SelectableText.rich(
       _buildHighlightedNodeSpan(
-        node: node,
+        node: widget.node,
         textStyle: effectiveStyle,
-        theme: theme,
+        theme: widget.theme,
         ttsState: ttsState,
       ),
       textAlign: TextAlign.start,
-      contextMenuBuilder: contextMenuBuilder,
+      contextMenuBuilder: widget.contextMenuBuilder,
     );
   }
 }
+
 
 TextSpan _buildHighlightedNodeSpan({
   required DocumentNode node,
