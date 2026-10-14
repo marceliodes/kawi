@@ -107,6 +107,21 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     _effectiveItemPositionsListener.itemPositions.addListener(
       _onPositionsChanged,
     );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _prewarmAdjacentChapters();
+    });
+  }
+
+  void _prewarmAdjacentChapters() {
+    if (!_isEpub) return;
+    final totalChapters = widget.pageCount > 0 ? widget.pageCount : 1;
+    prewarmAdjacentChapters(
+      ref,
+      filePath: widget.filePath,
+      chapterIndex: _currentChapterIndex,
+      totalChapters: totalChapters,
+    );
   }
 
   @override
@@ -126,6 +141,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       final newIndex = widget.chapterIndex!;
       _currentChapterIndex = newIndex;
       _currentPageIndexInChapter = 0;
+      _prewarmAdjacentChapters();
       if (widget.settings.isPaginated) {
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
@@ -156,6 +172,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         widget.pageCount > 0 ? widget.pageCount - 1 : 0,
       );
       _currentPageIndexInChapter = 0;
+      _prewarmAdjacentChapters();
       if (widget.settings.isPaginated) {
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
@@ -257,6 +274,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
     if (visibleChapterIndex != _currentChapterIndex) {
       _currentChapterIndex = visibleChapterIndex;
+      _prewarmAdjacentChapters();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         widget.onChapterChanged?.call(visibleChapterIndex);
@@ -275,6 +293,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         _currentChapterIndex = target;
         _currentPageIndexInChapter = 0;
       });
+      _prewarmAdjacentChapters();
       if (widget.settings.isPaginated) {
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
@@ -330,6 +349,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           _currentChapterIndex++;
           _currentPageIndexInChapter = 0;
         });
+        _prewarmAdjacentChapters();
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
         }
@@ -363,6 +383,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           _currentChapterIndex--;
           _currentPageIndexInChapter = 0;
         });
+        _prewarmAdjacentChapters();
         if (widget.pageController.hasClients) {
           widget.pageController.jumpToPage(0);
         }
@@ -446,8 +467,6 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         _checkAutoPageTurn(_currentChapterPages, next);
       }
     });
-
-    debugPrint('>>> [PROBE] ReaderCanvas _isEpub: $_isEpub | widget.isEpub: ${widget.isEpub} | isPaginated: $isPaginated');
 
     return Focus(
       focusNode: _focusNode,
@@ -1249,59 +1268,62 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final Widget child;
     if (initialNodes != null && initialNodes!.isNotEmpty) {
-      return _buildContent(context, initialNodes!);
+      child = _buildContent(context, initialNodes!);
+    } else {
+      final nodesAsync = ref.watch(documentChapterNodesProvider((
+        filePath: filePath,
+        chapterIndex: chapterIndex,
+      )));
+
+      child = nodesAsync.when(
+        loading: () => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _ChapterHeaderWidget(
+              filePath: filePath,
+              chapterIndex: chapterIndex,
+              columnWidth: columnWidth,
+              theme: theme,
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: Spacing.xl),
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            ),
+          ],
+        ),
+        error: (err, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _ChapterHeaderWidget(
+              filePath: filePath,
+              chapterIndex: chapterIndex,
+              columnWidth: columnWidth,
+              theme: theme,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: Spacing.lg),
+              child: Center(
+                child: Text(
+                  'Error loading chapter: $err',
+                  style: AppTypography.micro.copyWith(color: theme.textMuted),
+                ),
+              ),
+            ),
+          ],
+        ),
+        data: (nodes) => _buildContent(context, nodes),
+      );
     }
 
-    final nodesAsync = ref.watch(documentChapterNodesProvider((
-      filePath: filePath,
-      chapterIndex: chapterIndex,
-    )));
-
-    return nodesAsync.when(
-      loading: () => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _ChapterHeaderWidget(
-            filePath: filePath,
-            chapterIndex: chapterIndex,
-            columnWidth: columnWidth,
-            theme: theme,
-          ),
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: Spacing.xl),
-            child: Center(
-              child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          ),
-        ],
-      ),
-      error: (err, _) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _ChapterHeaderWidget(
-            filePath: filePath,
-            chapterIndex: chapterIndex,
-            columnWidth: columnWidth,
-            theme: theme,
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: Spacing.lg),
-            child: Center(
-              child: Text(
-                'Error loading chapter: $err',
-                style: AppTypography.micro.copyWith(color: theme.textMuted),
-              ),
-            ),
-          ),
-        ],
-      ),
-      data: (nodes) => _buildContent(context, nodes),
-    );
+    return RepaintBoundary(child: child);
   }
 
   Widget _buildContent(BuildContext context, List<DocumentNode> nodes) {

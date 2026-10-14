@@ -267,5 +267,33 @@ void main() {
       expect(event.end, equals(9));
       expect(event.sentenceIndex, equals(0));
     });
+
+    test('deduplicates back-to-back ConfigureVoiceCommand for same voice and engine', () async {
+      const mockVoice = TtsVoiceModel(
+        id: 'mock-v1',
+        name: 'Mock Voice',
+        engineType: TtsEngineType.mock,
+        isInstalled: true,
+      );
+
+      final stateEvents = <StateUpdatedEvent>[];
+      final subscription = broadcastController.stream.listen((message) {
+        if (message is StateUpdatedEvent) {
+          stateEvents.add(message);
+        }
+      });
+
+      // Send identical voice config twice back-to-back
+      toWorkerPort.send(const ConfigureVoiceCommand(voice: mockVoice));
+      toWorkerPort.send(const ConfigureVoiceCommand(voice: mockVoice));
+
+      // Wait for isolate processing
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      // Should only configure once
+      expect(stateEvents.where((e) => e.state.activeVoice?.id == 'mock-v1').length, equals(1));
+
+      await subscription.cancel();
+    });
   });
 }

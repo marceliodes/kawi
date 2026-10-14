@@ -100,6 +100,12 @@ class AudioPlaybackService {
         );
 
         if (_activeVoice != null) {
+          _pendingCommands.removeWhere(
+            (cmd) =>
+                cmd is ConfigureVoiceCommand &&
+                cmd.voice?.id == _activeVoice?.id &&
+                cmd.voice?.engineType == _activeVoice?.engineType,
+          );
           _toIsolatePort?.send(
             ConfigureVoiceCommand(
               voice: _activeVoice,

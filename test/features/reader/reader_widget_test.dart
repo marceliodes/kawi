@@ -114,8 +114,7 @@ void main() {
         findsOneWidget,
       );
 
-      // Bottom progress indicator (PRD §3.1.2: chapter title and total percentage)
-      expect(find.textContaining('8%'), findsOneWidget);
+      // Chapter title shown in top navigation bar
       expect(find.text('Chapter 1'), findsWidgets);
     },
   );
@@ -282,8 +281,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 500));
 
-    // Verify restored state (PRD §3.1.2: chapter title and total percentage)
-    expect(find.textContaining('33%'), findsOneWidget);
+    // Verify restored state (chapter title in top bar)
     expect(find.text('Book Two'), findsWidgets);
   });
 

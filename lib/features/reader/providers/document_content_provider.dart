@@ -275,3 +275,29 @@ final activeReadingAnchorProvider =
     NotifierProvider<ActiveReadingAnchorNotifier, ReadingAnchor?>(
   ActiveReadingAnchorNotifier.new,
 );
+
+/// Asynchronously pre-warms adjacent chapter AST nodes in memory
+/// for zero-lag scroll transitions.
+void prewarmAdjacentChapters(
+  WidgetRef ref, {
+  required String filePath,
+  required int chapterIndex,
+  required int totalChapters,
+}) {
+  final next = chapterIndex + 1;
+  final prev = chapterIndex - 1;
+
+  if (next < totalChapters) {
+    ref.read(documentChapterNodesProvider((
+      filePath: filePath,
+      chapterIndex: next,
+    )).future);
+  }
+  if (prev >= 0) {
+    ref.read(documentChapterNodesProvider((
+      filePath: filePath,
+      chapterIndex: prev,
+    )).future);
+  }
+}
+

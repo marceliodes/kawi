@@ -22,6 +22,10 @@ class TtsIsolateWorker {
   int _currentIndex = 0;
   TtsState _state = const TtsState();
 
+  String? _activeVoiceId;
+  TtsEngineType? _activeEngineType;
+  bool _isConfiguringVoice = false;
+
   int? _prebufferingIndex;
   int _prebufferGeneration = 0;
   int _lastWordStart = -1;
@@ -115,7 +119,11 @@ class TtsIsolateWorker {
         _prebufferGeneration++;
         _prebufferingIndex = null;
         _prebufferedSentence = null;
+        _activeVoiceId = null;
+        _activeEngineType = null;
+        _isConfiguringVoice = false;
         _engineBridge?.dispose();
+        _engineBridge = null;
         _fromMainPort.close();
     }
   }
@@ -124,7 +132,11 @@ class TtsIsolateWorker {
     // ignore: avoid_print
     print('>>> [TTS ISOLATE] _configureVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}) <<<');
     if (voice == null) {
+      _activeVoiceId = null;
+      _activeEngineType = null;
+      _isConfiguringVoice = false;
       await _engineBridge?.stop();
+      _engineBridge?.dispose();
       _engineBridge = null;
       _state = _state.copyWith(
         clearActiveVoice: true,
@@ -134,11 +146,24 @@ class TtsIsolateWorker {
       return;
     }
 
-    await _engineBridge?.dispose();
-    _engineBridge = createEngineBridge(voice.engineType);
-    // ignore: avoid_print
-    print('>>> [TTS ISOLATE] Created engine bridge: ${_engineBridge.runtimeType} <<<');
+    // Guard: skip if the requested voice.id and engine are already active or currently initializing
+    if ((_isConfiguringVoice || _engineBridge != null) &&
+        _activeVoiceId == voice.id &&
+        _activeEngineType == voice.engineType) {
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] Skipping duplicate _configureVoice for "${voice.id}" (${voice.engineType}) <<<');
+      return;
+    }
+
+    _isConfiguringVoice = true;
+    _activeVoiceId = voice.id;
+    _activeEngineType = voice.engineType;
+
     try {
+      await _engineBridge?.dispose();
+      _engineBridge = createEngineBridge(voice.engineType);
+      // ignore: avoid_print
+      print('>>> [TTS ISOLATE] Created engine bridge: ${_engineBridge.runtimeType} <<<');
       await _engineBridge!.initialize(
         voice: voice,
         rootIsolateToken: _rootIsolateToken,
@@ -146,10 +171,14 @@ class TtsIsolateWorker {
       // ignore: avoid_print
       print('>>> [TTS ISOLATE] Engine bridge initialized successfully <<<');
     } catch (e, st) {
+      _activeVoiceId = null;
+      _activeEngineType = null;
       // ignore: avoid_print
       print('>>> [TTS ISOLATE] Engine bridge initialization FAILED: $e <<<');
       // ignore: avoid_print
       print('>>> [TTS ISOLATE] Stack trace:\n$st <<<');
+    } finally {
+      _isConfiguringVoice = false;
     }
 
     _state = _state.copyWith(

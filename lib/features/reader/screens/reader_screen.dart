@@ -20,7 +20,6 @@ import '../widgets/reader_canvas.dart';
 import '../widgets/toc_drawer.dart';
 import '../widgets/typography_settings_sheet.dart';
 import '../widgets/tts_control_bar.dart';
-import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/providers/voice_manager_provider.dart';
 import '../../tts/screens/voice_manager_screen.dart';
@@ -682,9 +681,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   Widget build(BuildContext context) {
     final theme = ReaderTheme.of(context);
     final settings = ref.watch(readerSettingsProvider);
-    final ttsState = ref.watch(ttsStateProvider);
+    final isTtsPlaying = ref.watch(ttsProvider.select((s) => s.isPlaying));
     final isEpub = widget.document.isEpub;
-    debugPrint('>>> [PROBE] ReaderScreen isEpub: $isEpub | path: "${widget.document.filePath}" | doc.isEpub: ${widget.document.isEpub} | isPaginated: ${settings.isPaginated}');
 
     return Scaffold(
       key: _scaffoldKey,
@@ -715,9 +713,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
           List<PageChunk>? epubChunks;
           List<DocumentNode>? epubNodes;
-          int totalPages = widget.document.pageCount > 0
-              ? widget.document.pageCount
-              : 1;
 
           if (isEpub) {
             if (settings.isPaginated) {
@@ -739,7 +734,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               epubChunks = pagesAsync.asData?.value;
               if (epubChunks != null && epubChunks.isNotEmpty) {
                 _currentChapterPages = epubChunks;
-                totalPages = epubChunks.length;
               }
             } else {
               final nodesAsync = ref.watch(
@@ -751,14 +745,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               epubNodes = nodesAsync.asData?.value;
             }
           }
-
-          final progressPercent = (isEpub && settings.isPaginated)
-              ? (((_currentPageIndexInChapter + 1) / totalPages) * 100)
-                  .clamp(0, 100)
-                  .round()
-              : (((_currentChapterIndex + 1) / totalPages) * 100)
-                  .clamp(0, 100)
-                  .round();
 
           return Stack(
             children: [
@@ -839,36 +825,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                   child: AnimatedOpacity(
                     duration: const Duration(milliseconds: 200),
                     opacity: _isChromeVisible ? 1.0 : 0.0,
-                    child: _buildTopAppBar(theme, ttsState),
-                  ),
-                ),
-              ),
-
-              // Auto-hiding Bottom Progress Bar
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: AnimatedSlide(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeInOut,
-                  offset: _isChromeVisible ? Offset.zero : const Offset(0, 1),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 200),
-                    opacity: _isChromeVisible ? 1.0 : 0.0,
-                    child: _buildBottomStatus(
-                      theme,
-                      progressPercent,
-                      totalPages,
-                      isEpub: isEpub,
-                      isEpubPaginated: isEpub && settings.isPaginated,
-                    ),
+                    child: _buildTopAppBar(theme, isTtsPlaying),
                   ),
                 ),
               ),
 
               // Floating Media Control Bar for TTS
-              if (_isTtsBarVisible || ttsState.isPlaying || ttsState.isPaused)
+              if (_isTtsBarVisible || isTtsPlaying)
                 Positioned(
                   bottom:
                       Spacing.xl + MediaQuery.paddingOf(context).bottom + 16,
@@ -890,7 +853,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
   }
 
-  Widget _buildTopAppBar(ReaderThemeData theme, TtsState ttsState) {
+  Widget _buildTopAppBar(ReaderThemeData theme, bool isTtsPlaying) {
     final hasInstalledModels = ref.watch(hasInstalledTtsModelsProvider);
 
     return Container(
@@ -979,13 +942,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                 ? 'Read Aloud (TTS)'
                 : 'No TTS engine downloaded.',
             icon: PhosphorIcon(
-              _isTtsBarVisible || ttsState.isPlaying
+              _isTtsBarVisible || isTtsPlaying
                   ? PhosphorIconsFill.speakerHigh
                   : PhosphorIconsLight.speakerHigh,
               size: 20,
               color: !hasInstalledModels
                   ? theme.textMuted.withValues(alpha: 0.35)
-                  : (_isTtsBarVisible || ttsState.isPlaying
+                  : (_isTtsBarVisible || isTtsPlaying
                       ? theme.accent
                       : theme.textPrimary),
             ),
@@ -1012,67 +975,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               color: theme.textPrimary,
             ),
             onPressed: _openTypographySheet,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBottomStatus(
-    ReaderThemeData theme,
-    int progressPercent,
-    int totalPages, {
-    bool isEpub = false,
-    bool isEpubPaginated = false,
-  }) {
-    final String statusText;
-    if (isEpub) {
-      if (isEpubPaginated) {
-        statusText =
-            'Page ${_currentPageIndexInChapter + 1} of $totalPages • $progressPercent%';
-      } else {
-        statusText = '$progressPercent%';
-      }
-    } else {
-      statusText =
-          'Page ${_currentPageIndex + 1} of $totalPages ($progressPercent%)';
-    }
-
-    return Container(
-      padding: EdgeInsets.only(
-        left: Spacing.lg,
-        right: Spacing.lg,
-        top: Spacing.xs,
-        bottom: MediaQuery.paddingOf(context).bottom + Spacing.xs,
-      ),
-      decoration: BoxDecoration(
-        color: theme.bgCard.withValues(alpha: 0.95),
-        border: Border(top: BorderSide(color: theme.borderSubtle)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(
-            child: Text(
-              _currentChapterTitle ??
-                  (isEpub
-                      ? 'Chapter ${_currentChapterIndex + 1}'
-                      : 'Page ${_currentPageIndex + 1}'),
-              style: AppTypography.micro.copyWith(
-                color: theme.textMuted,
-                fontWeight: FontWeight.w500,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: Spacing.md),
-          Text(
-            statusText,
-            style: AppTypography.micro.copyWith(
-              color: theme.textMuted,
-              fontWeight: FontWeight.w600,
-            ),
           ),
         ],
       ),

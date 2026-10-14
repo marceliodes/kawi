@@ -90,6 +90,9 @@ final ttsStateProvider = NotifierProvider<TtsStateNotifier, TtsState>(
 /// Alias provider for ttsStateProvider to support ttsNotifierProvider naming.
 final ttsNotifierProvider = ttsStateProvider;
 
+/// Alias provider for ttsStateProvider.
+final ttsProvider = ttsStateProvider;
+
 /// Stream provider for word boundary events for fine-grained highlighting.
 final ttsWordBoundaryProvider = StreamProvider.autoDispose<WordBoundaryEvent>((ref) {
   final service = ref.watch(ttsServiceProvider);
