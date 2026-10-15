@@ -67,6 +67,9 @@ final documentsStreamProvider = StreamProvider.autoDispose<List<DocumentEntry>>(
     final db = ref.watch(databaseProvider);
     final filter = ref.watch(libraryFilterProvider);
 
+    // Trigger cover self-healing in background on library load
+    ref.read(ingestionServiceProvider).selfHealLibraryCovers();
+
     return switch (filter.category) {
       LibraryFilterCategory.all => db.watchAllDocuments(),
       LibraryFilterCategory.reading => db.watchCurrentlyReading(),

@@ -15,7 +15,6 @@ import '../models/document_models.dart';
 import '../providers/document_content_provider.dart';
 import '../providers/reader_settings_provider.dart';
 import '../services/document_extractor.dart';
-import '../services/chapter_paginator.dart';
 import '../widgets/reader_canvas.dart';
 import '../widgets/toc_drawer.dart';
 import '../widgets/typography_settings_sheet.dart';
@@ -64,6 +63,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   double? _currentColumnWidth;
   double? _currentColumnHeight;
 
+  bool get _isEpub => widget.document.isEpub;
+
   @override
   void initState() {
     super.initState();
@@ -101,10 +102,16 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           _currentChapterTitle = progress.currentChapter;
         });
 
+        _resolveChapterTitle(_currentChapterIndex);
+
         // Restore scroll or page position after layout
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
-          if (_pageController.hasClients && _currentPageIndexInChapter > 0) {
+          if (_isEpub) {
+            _canvasKey.currentState?.jumpToPageInChapter(_currentPageIndexInChapter);
+          } else if (_pageController.hasClients &&
+              _pageController.positions.length == 1 &&
+              _currentPageIndexInChapter > 0) {
             _pageController.jumpToPage(_currentPageIndexInChapter);
           }
           _canvasKey.currentState?.scrollToPage(_currentPageIndex);
@@ -112,6 +119,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             if (mounted) _isRestoring = false;
           });
         });
+      } else if (mounted) {
+        _resolveChapterTitle(0);
       }
     } catch (_) {
       // Ignored: fallback to initial page
@@ -142,7 +151,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   void _onPageOrScrollChanged(int pageIndex, double offset) {
     if (_isRestoring) return;
 
-    final pageChanged = _currentPageIndex != pageIndex;
+    final pageChanged = _currentPageIndex != pageIndex || _currentChapterIndex != pageIndex;
     final offsetChanged = (_currentScrollOffset - offset).abs() > 0.05;
 
     if (pageChanged) {
@@ -175,117 +184,64 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   void _navigateToNextChapter() {
     final totalChapters =
         widget.document.pageCount > 0 ? widget.document.pageCount : 1;
-    if (_currentPageIndex < totalChapters - 1) {
-      _navigateToPage(_currentPageIndex + 1);
+    if (_currentChapterIndex < totalChapters - 1) {
+      final targetChapter = _currentChapterIndex + 1;
+      final settings = ref.read(readerSettingsProvider);
+      if (widget.document.isEpub && settings.isPaginated) {
+        setState(() {
+          _currentChapterIndex = targetChapter;
+          _currentPageIndex = targetChapter;
+          _currentPageIndexInChapter = 0;
+          _currentScrollOffset = 0.0;
+        });
+        _resolveChapterTitle(targetChapter);
+        _debounceSaveProgress(targetChapter, 0.0, pageIndexInChapter: 0);
+      } else {
+        _navigateToPage(targetChapter);
+      }
     }
   }
 
-  Future<void> _navigateToPreviousChapter() async {
-    if (_currentPageIndex <= 0) return;
+  void _navigateToPreviousChapter() {
+    if (_currentChapterIndex <= 0) return;
 
-    final targetChapter = _currentPageIndex - 1;
+    final targetChapter = _currentChapterIndex - 1;
     final settings = ref.read(readerSettingsProvider);
 
     if (widget.document.isEpub && settings.isPaginated) {
-      final width = _currentColumnWidth ??
-          (MediaQuery.sizeOf(context).width - (settings.horizontalPadding * 2))
-              .clamp(100.0, settings.contentMaxWidth);
-      final height = _currentColumnHeight ??
-          (MediaQuery.sizeOf(context).height - (Spacing.xl * 2 + 80.0) - 32.0)
-              .clamp(100.0, MediaQuery.sizeOf(context).height);
-
-      final theme = ReaderTheme.of(context);
-      final paginationParams = PaginationParams(
-        filePath: widget.document.filePath,
-        chapterIndex: targetChapter,
-        maxWidth: width,
-        maxHeight: height,
-        textStyle: TextStyle(
-          fontFamily: settings.fontFamily,
-          fontSize: settings.fontSize,
-          height: settings.lineHeight,
-          color: theme.textPrimary,
-        ),
-        paragraphSpacing: 16.0,
-      );
-
-      List<PageChunk> pages = const [];
-      try {
-        pages = await ref.read(chapterPagesProvider(paginationParams).future);
-      } catch (_) {
-        final nodes = await ref.read(
-          documentChapterNodesProvider((
-            filePath: widget.document.filePath,
-            chapterIndex: targetChapter,
-          )).future,
-        );
-        pages = ChapterPaginator.paginate(
-          nodes: nodes,
-          maxWidth: width,
-          maxHeight: height,
-          textStyle: TextStyle(
-            fontFamily: settings.fontFamily,
-            fontSize: settings.fontSize,
-            height: settings.lineHeight,
-            color: theme.textPrimary,
-          ),
-          paragraphSpacing: 16.0,
-          chapterIndex: targetChapter,
-        );
-      }
-
-      if (!mounted) return;
-
-      final lastPageIndex = pages.isNotEmpty ? pages.length - 1 : 0;
-
       setState(() {
-        _currentPageIndex = targetChapter;
         _currentChapterIndex = targetChapter;
-        _currentPageIndexInChapter = lastPageIndex;
-        _currentChapterPages = pages;
+        _currentPageIndex = targetChapter;
+        _currentPageIndexInChapter = -1; // Sentinel: resolve to pages.length - 1 once paginated
         _currentScrollOffset = 0.0;
       });
 
-      if (_pageController.hasClients) {
-        _pageController.jumpToPage(lastPageIndex);
-      }
-
-      if (pages.isNotEmpty) {
-        final lastChunk = pages[lastPageIndex];
-        ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
-              chapterIndex: targetChapter,
-              paragraphIndex: lastChunk.startParagraphIndex,
-              charOffset: lastChunk.startCharOffset,
-            );
-      }
-
       _resolveChapterTitle(targetChapter);
-      _debounceSaveProgress(targetChapter, 0.0, pageIndexInChapter: lastPageIndex);
+      _debounceSaveProgress(targetChapter, 0.0, pageIndexInChapter: -1);
     } else {
       _navigateToPage(targetChapter);
     }
   }
 
-  void _resolveChapterTitle(int pageIndex) {
-    final tocAsync = ref.read(documentTocProvider(widget.document.filePath));
-    tocAsync.whenData((entries) {
-      String? found;
-      void find(List<TocEntry> list) {
-        for (final item in list) {
-          if (item.pageIndex <= pageIndex) {
-            found = item.title;
-          }
-          if (item.children.isNotEmpty) {
-            find(item.children);
-          }
+  Future<void> _resolveChapterTitle(int chapterIndex) async {
+    try {
+      final title = await ref.read(
+        documentChapterTitleProvider((
+          filePath: widget.document.filePath,
+          chapterIndex: chapterIndex,
+        )).future,
+      );
+      if (mounted) {
+        final resolved = (title != null && title.trim().isNotEmpty)
+            ? title.trim()
+            : (widget.document.isEpub
+                ? 'Chapter ${chapterIndex + 1}'
+                : 'Page ${chapterIndex + 1}');
+        if (_currentChapterTitle != resolved) {
+          setState(() => _currentChapterTitle = resolved);
         }
       }
-
-      find(entries);
-      if (found != null && found != _currentChapterTitle && mounted) {
-        setState(() => _currentChapterTitle = found);
-      }
-    });
+    } catch (_) {}
   }
 
   void _debounceSaveProgress(int pageIndex, double offset, {int? pageIndexInChapter}) {
@@ -323,8 +279,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
     final settings = ref.read(readerSettingsProvider);
     if (settings.isPaginated) {
-      if (_pageController.hasClients) {
-        _pageController.jumpToPage(isEpub ? 0 : clampedPage);
+      if (isEpub) {
+        _canvasKey.currentState?.jumpToPageInChapter(0);
+      } else if (_pageController.hasClients && _pageController.positions.length == 1) {
+        _pageController.jumpToPage(clampedPage);
       }
     } else {
       if (_itemScrollController.isAttached) {
@@ -376,27 +334,86 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         final settings = ref.read(readerSettingsProvider);
         String textToRead = '';
 
-        if (settings.isPaginated && _currentChapterPages.isNotEmpty) {
-          var chunkIdx = _currentPageIndexInChapter.clamp(
-            0,
-            _currentChapterPages.length - 1,
-          );
+        if (settings.isPaginated) {
+          List<PageChunk> pages = _currentChapterPages;
+          if (pages.isEmpty) {
+            final width = _currentColumnWidth ??
+                (MediaQuery.sizeOf(context).width - (settings.horizontalPadding * 2))
+                    .clamp(100.0, settings.contentMaxWidth);
+            final height = _currentColumnHeight ??
+                (MediaQuery.sizeOf(context).height - (Spacing.xl * 2 + 80.0) - 32.0)
+                    .clamp(100.0, MediaQuery.sizeOf(context).height);
+            final theme = ReaderTheme.of(context);
+            final paginationParams = PaginationParams(
+              filePath: widget.document.filePath,
+              chapterIndex: _currentPageIndex,
+              maxWidth: width,
+              maxHeight: height,
+              textStyle: TextStyle(
+                fontFamily: settings.fontFamily,
+                fontSize: settings.fontSize,
+                height: settings.lineHeight,
+                color: theme.textPrimary,
+              ),
+              paragraphSpacing: 16.0,
+            );
+            try {
+              pages = await ref.read(chapterPagesProvider(paginationParams).future);
+              _currentChapterPages = pages;
+            } catch (_) {}
+          }
+
+          var chunkIdx = 0;
+          final canvas = _canvasKey.currentState;
+          if (_isEpub) {
+            final safePage = canvas?.safeGetEpubPage();
+            if (safePage != null) {
+              chunkIdx = safePage.round();
+            } else {
+              chunkIdx = _currentPageIndexInChapter;
+            }
+          } else {
+            final safePage = canvas?.safeGetPage();
+            if (safePage != null) {
+              chunkIdx = safePage.round();
+            } else {
+              chunkIdx = _currentPageIndexInChapter;
+            }
+          }
+          chunkIdx = chunkIdx.clamp(0, pages.isNotEmpty ? pages.length - 1 : 0);
+
+          if (fromSentence != null && fromSentence.trim().isNotEmpty && pages.isNotEmpty) {
+            final lowerFrom = fromSentence.toLowerCase().trim();
+            for (var p = 0; p < pages.length; p++) {
+              if (pages[p].plainText.toLowerCase().contains(lowerFrom)) {
+                chunkIdx = p;
+                break;
+              }
+            }
+          }
+
           // If the current page is an image or has no text, advance to the first subsequent page with text
-          while (chunkIdx < _currentChapterPages.length &&
-              _currentChapterPages[chunkIdx].plainText.trim().isEmpty) {
+          while (chunkIdx < pages.length &&
+              pages[chunkIdx].plainText.trim().isEmpty) {
             chunkIdx++;
           }
-          if (chunkIdx >= _currentChapterPages.length) {
+          if (chunkIdx >= pages.length) {
             // No text in remainder of chapter
             return;
           }
           if (chunkIdx != _currentPageIndexInChapter) {
-            if (_pageController.hasClients) {
-              _pageController.animateToPage(
-                chunkIdx,
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeInOut,
-              );
+            if (_isEpub) {
+              _canvasKey.currentState?.animateToPageInChapter(chunkIdx);
+            } else if (_pageController.hasClients &&
+                _pageController.positions.length == 1) {
+              final curP = _canvasKey.currentState?.safeGetPage();
+              if (curP?.round() != chunkIdx) {
+                _pageController.animateToPage(
+                  chunkIdx,
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeInOut,
+                );
+              }
             }
             setState(() {
               _currentPageIndexInChapter = chunkIdx;
@@ -404,8 +421,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           }
 
           final buffer = StringBuffer();
-          for (var i = chunkIdx; i < _currentChapterPages.length; i++) {
-            final t = _currentChapterPages[i].plainText.trim();
+          for (var i = chunkIdx; i < pages.length; i++) {
+            final t = pages[i].plainText.trim();
             if (t.isNotEmpty) {
               if (buffer.isNotEmpty) buffer.write('\n\n');
               buffer.write(t);
@@ -793,7 +810,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             if (settings.isPaginated) {
               final paginationParams = PaginationParams(
                 filePath: widget.document.filePath,
-                chapterIndex: _currentPageIndex,
+                chapterIndex: _currentChapterIndex,
                 maxWidth: columnWidth,
                 maxHeight: columnHeight,
                 textStyle: TextStyle(
@@ -814,7 +831,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               final nodesAsync = ref.watch(
                 documentChapterNodesProvider((
                   filePath: widget.document.filePath,
-                  chapterIndex: _currentPageIndex,
+                  chapterIndex: _currentChapterIndex,
                 )),
               );
               epubNodes = nodesAsync.asData?.value;
@@ -846,7 +863,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       filePath: widget.document.filePath,
                       pageCount: widget.document.pageCount,
                       settings: settings,
-                      initialPageIndex: _currentPageIndex,
+                      initialPageIndex: _currentChapterIndex,
                       initialChapterIndex: _currentChapterIndex,
                       initialScrollOffset: _currentScrollOffset,
                       scrollController: _scrollController,
@@ -859,9 +876,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                         _startTts(fromSentence: sentence);
                       },
                       epubChunks: epubChunks,
-                      epubNodes: epubNodes,
+                      epubNodes: settings.isPaginated ? null : epubNodes,
                       isEpub: isEpub,
-                      chapterIndex: _currentPageIndex,
+                      chapterIndex: _currentChapterIndex,
                       pageIndexInChapter: _currentPageIndexInChapter,
                       onNextChapter: _navigateToNextChapter,
                       onPreviousChapter: _navigateToPreviousChapter,
@@ -945,7 +962,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                             _currentPageIndexInChapter =
                                 _speakingPageIndexInChapter!;
                           });
-                          if (_pageController.hasClients) {
+                          if (_isEpub) {
+                            _canvasKey.currentState?.animateToPageInChapter(
+                              _speakingPageIndexInChapter!,
+                            );
+                          } else if (_pageController.hasClients &&
+                              _pageController.positions.length == 1) {
                             _pageController.animateToPage(
                               _speakingPageIndexInChapter!,
                               duration: const Duration(milliseconds: 250),

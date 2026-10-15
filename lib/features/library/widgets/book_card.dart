@@ -1,17 +1,23 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/database/database_provider.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
+import '../../reader/services/epub_service.dart';
 import '../providers/library_provider.dart';
+import '../services/document_ingestion_service.dart';
 import 'typeset_book_jacket.dart';
 
-class BookCard extends ConsumerWidget {
+class BookCard extends ConsumerStatefulWidget {
   const BookCard({
     required this.document,
     this.onTap,
@@ -26,12 +32,106 @@ class BookCard extends ConsumerWidget {
   final String? shelfName;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BookCard> createState() => _BookCardState();
+}
+
+class _BookCardState extends ConsumerState<BookCard> {
+  Uint8List? _inMemoryCoverBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAndHealCover();
+  }
+
+  @override
+  void didUpdateWidget(BookCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.document.id != widget.document.id ||
+        oldWidget.document.coverPath != widget.document.coverPath) {
+      _checkAndHealCover();
+    }
+  }
+
+  void _checkAndHealCover() {
+    final doc = widget.document;
+    final isEpub = doc.format.toLowerCase() == 'epub';
+    if (!isEpub) return;
+
+    final hasCoverFile =
+        doc.coverPath != null && File(doc.coverPath!).existsSync();
+    final isBmp = doc.coverPath?.toLowerCase().endsWith('.bmp') == true;
+
+    if (!hasCoverFile || isBmp) {
+      _extractCover();
+    }
+  }
+
+  Future<void> _extractCover() async {
+    final doc = widget.document;
+    if (!File(doc.filePath).existsSync()) return;
+
+    try {
+      final bytes =
+          await EpubService.instance.extractEpubCoverBytes(doc.filePath);
+      if (bytes != null && bytes.isNotEmpty && mounted) {
+        setState(() {
+          _inMemoryCoverBytes = bytes;
+        });
+
+        final appDocDir = await getApplicationDocumentsDirectory();
+        final coversDir = Directory(p.join(appDocDir.path, 'kawi', 'covers'));
+        if (!await coversDir.exists()) {
+          await coversDir.create(recursive: true);
+        }
+
+        final ext = DocumentIngestionService.detectImageExtension(bytes);
+        final newCoverFile = File(p.join(coversDir.path, 'cover_${doc.id}$ext'));
+        await newCoverFile.writeAsBytes(bytes);
+
+        if (doc.coverPath != null && doc.coverPath != newCoverFile.path) {
+          try {
+            final old = File(doc.coverPath!);
+            await FileImage(old).evict();
+            if (old.existsSync()) await old.delete();
+          } catch (_) {}
+        }
+        await FileImage(newCoverFile).evict();
+
+        final db = ref.read(databaseProvider);
+        await db.updateDocumentCover(doc.id, newCoverFile.path);
+      }
+    } catch (e) {
+      debugPrint('[BookCard] Cover extraction failed: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final document = widget.document;
     final theme = ReaderTheme.of(context);
     final progressAsync = ref.watch(documentProgressProvider(document.id));
 
+    final isEpub = document.format.toLowerCase() == 'epub';
     final hasCoverFile =
         document.coverPath != null && File(document.coverPath!).existsSync();
+
+    bool isCoverBlack = false;
+    if (hasCoverFile) {
+      final isBmp = document.coverPath!.toLowerCase().endsWith('.bmp');
+      if (isBmp) {
+        if (isEpub) {
+          isCoverBlack = true;
+        } else {
+          try {
+            final bytes = File(document.coverPath!).readAsBytesSync();
+            isCoverBlack = DocumentIngestionService.isAllBlackBmp(bytes);
+          } catch (_) {}
+        }
+      }
+    }
+
+    final showCoverImage = hasCoverFile && !isCoverBlack;
 
     return Material(
       color: Colors.transparent,
@@ -39,8 +139,8 @@ class BookCard extends ConsumerWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(Radii.md),
         hoverColor: theme.hoverOverlay,
-        onTap: onTap,
-        onSecondaryTapUp: onRemoveFromShelf != null
+        onTap: widget.onTap,
+        onSecondaryTapUp: widget.onRemoveFromShelf != null
             ? (details) =>
                   _showContextMenu(context, details.globalPosition, theme)
             : null,
@@ -68,9 +168,9 @@ class BookCard extends ConsumerWidget {
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(Radii.sm),
-                          child: hasCoverFile
-                              ? Image.file(
-                                  File(document.coverPath!),
+                          child: _inMemoryCoverBytes != null
+                              ? Image.memory(
+                                  _inMemoryCoverBytes!,
                                   fit: BoxFit.cover,
                                   errorBuilder: (context, error, stackTrace) {
                                     return TypesetBookJacket(
@@ -79,20 +179,32 @@ class BookCard extends ConsumerWidget {
                                     );
                                   },
                                 )
-                              : TypesetBookJacket(
-                                  title: document.title,
-                                  author: document.author,
-                                ),
+                              : (showCoverImage
+                                  ? Image.file(
+                                      File(document.coverPath!),
+                                      fit: BoxFit.cover,
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                        return TypesetBookJacket(
+                                          title: document.title,
+                                          author: document.author,
+                                        );
+                                      },
+                                    )
+                                  : TypesetBookJacket(
+                                      title: document.title,
+                                      author: document.author,
+                                    )),
                         ),
                       ),
                     ),
-                    if (onRemoveFromShelf != null)
+                    if (widget.onRemoveFromShelf != null)
                       Positioned(
                         top: Spacing.xxs,
                         right: Spacing.xxs,
                         child: _CardMenuButton(
-                          onRemoveFromShelf: onRemoveFromShelf!,
-                          shelfName: shelfName,
+                          onRemoveFromShelf: widget.onRemoveFromShelf!,
+                          shelfName: widget.shelfName,
                         ),
                       ),
                   ],
@@ -230,8 +342,8 @@ class BookCard extends ConsumerWidget {
               ),
               const SizedBox(width: Spacing.xs),
               Text(
-                shelfName != null
-                    ? 'Remove from $shelfName'
+                widget.shelfName != null
+                    ? 'Remove from ${widget.shelfName}'
                     : 'Remove from Shelf',
                 style: AppTypography.body.copyWith(
                   color: Colors.redAccent,
@@ -244,7 +356,7 @@ class BookCard extends ConsumerWidget {
       ],
     ).then((value) {
       if (value == 'remove') {
-        onRemoveFromShelf?.call();
+        widget.onRemoveFromShelf?.call();
       }
     });
   }

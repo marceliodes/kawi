@@ -86,15 +86,42 @@ class KokoroEngineBridge implements TtsEngineBridge {
   String _voiceStyle = 'Default';
   String? _modelPath;
   String? _resolvedModelPath;
+  PiperEngineBridge? _fallbackPiperBridge;
+
+  /// Global flag tracking whether the Kokoro ONNX model opset is supported
+  /// by the native onnxruntime library linked on this platform.
+  static bool isKokoroSupported = true;
+  static bool get isAvailable => isKokoroSupported;
+  static set isAvailable(bool value) => isKokoroSupported = value;
+  static void resetAvailability() => isKokoroSupported = true;
 
   @override
-  bool get isInitialized => _initialized;
+  bool get isInitialized => _fallbackPiperBridge?.isInitialized ?? _initialized;
 
   @override
-  bool get isSpeaking => _isSpeaking;
+  bool get isSpeaking => _fallbackPiperBridge?.isSpeaking ?? _isSpeaking;
 
   @override
-  bool get isPaused => _isPaused;
+  bool get isPaused => _fallbackPiperBridge?.isPaused ?? _isPaused;
+
+  Future<void> _initializePiperFallback(
+    TtsVoiceModel voice,
+    RootIsolateToken? rootIsolateToken,
+  ) async {
+    _fallbackPiperBridge = PiperEngineBridge();
+    try {
+      await _fallbackPiperBridge!.initialize(
+        voice: voice,
+        rootIsolateToken: rootIsolateToken,
+      );
+      _initialized = _fallbackPiperBridge!.isInitialized;
+      // ignore: avoid_print
+      print('>>> [KOKORO BRIDGE] Successfully initialized Piper fallback engine bridge <<<');
+    } catch (piperErr) {
+      debugPrint('[KokoroEngineBridge] Piper fallback initialization failed: $piperErr');
+      _initialized = false;
+    }
+  }
 
   Future<String?> _resolveKokoroModelPath() async {
     if (_resolvedModelPath != null && File(_resolvedModelPath!).existsSync()) {
@@ -136,6 +163,12 @@ class KokoroEngineBridge implements TtsEngineBridge {
 
     _resolvedModelPath = await _resolveKokoroModelPath();
 
+    if (!isKokoroSupported) {
+      debugPrint('[KokoroEngineBridge] Kokoro marked unsupported on this runtime. Falling back to Piper.');
+      await _initializePiperFallback(voice, rootIsolateToken);
+      return;
+    }
+
     try {
       if (_kokoro == null) {
         _kokoro = KokoroTts();
@@ -147,8 +180,10 @@ class KokoroEngineBridge implements TtsEngineBridge {
       }
       _initialized = true;
     } catch (e) {
-      debugPrint('[KokoroEngineBridge] Initialization note: $e');
-      _initialized = true; // Allow graceful fallback
+      debugPrint('[KokoroEngineBridge] Initialization failed ($e). Falling back to Piper.');
+      isKokoroSupported = false;
+      _kokoro = null;
+      await _initializePiperFallback(voice, rootIsolateToken);
     }
   }
 
@@ -162,6 +197,18 @@ class KokoroEngineBridge implements TtsEngineBridge {
     AudioBufferCallback? onAudioBuffer,
     AudioBytesCallback? onAudioBytes,
   }) async {
+    if (_fallbackPiperBridge != null) {
+      return _fallbackPiperBridge!.speak(
+        text,
+        rate: rate,
+        pitch: pitch,
+        onWordBoundary: onWordBoundary,
+        onDone: onDone,
+        onAudioBuffer: onAudioBuffer,
+        onAudioBytes: onAudioBytes,
+      );
+    }
+
     // ignore: avoid_print
     print('>>> [KOKORO BRIDGE] speak() called with: "$text" (rate=$rate, modelPath=$_resolvedModelPath) <<<');
     await stop();
@@ -202,7 +249,31 @@ class KokoroEngineBridge implements TtsEngineBridge {
           onAudioBuffer?.call(pcm.toList(), sampleRate);
         }
       } catch (e) {
-        debugPrint('[KokoroEngineBridge] Synthesis note: $e');
+        debugPrint('[KokoroEngineBridge] Synthesis failed ($e). Falling back to Piper.');
+        isKokoroSupported = false;
+        _kokoro = null;
+        _fallbackPiperBridge = PiperEngineBridge();
+        try {
+          await _fallbackPiperBridge!.initialize(
+            voice: const TtsVoiceModel(
+              id: 'piper-fallback',
+              name: 'Piper Fallback',
+              engineType: TtsEngineType.piper,
+            ),
+          );
+          await _fallbackPiperBridge!.speak(
+            text,
+            rate: rate,
+            pitch: pitch,
+            onWordBoundary: onWordBoundary,
+            onDone: onDone,
+            onAudioBuffer: onAudioBuffer,
+            onAudioBytes: onAudioBytes,
+          );
+          return;
+        } catch (piperErr) {
+          debugPrint('[KokoroEngineBridge] Piper fallback synthesis failed: $piperErr');
+        }
       }
     } else {
       debugPrint('[KokoroEngineBridge] Kokoro model file not ready.');
@@ -248,17 +319,21 @@ class KokoroEngineBridge implements TtsEngineBridge {
   @override
   Future<void> pause() async {
     _isPaused = true;
+    await _fallbackPiperBridge?.pause();
   }
 
   @override
   Future<void> stop() async {
     _isSpeaking = false;
     _isPaused = false;
+    await _fallbackPiperBridge?.stop();
   }
 
   @override
   Future<void> dispose() async {
     await stop();
+    await _fallbackPiperBridge?.dispose();
+    _fallbackPiperBridge = null;
     _kokoro = null;
     _resolvedModelPath = null;
     _initialized = false;

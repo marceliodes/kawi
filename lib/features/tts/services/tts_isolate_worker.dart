@@ -58,11 +58,15 @@ class TtsIsolateWorker {
           } catch (_) {}
         }
 
-      case ConfigureVoiceCommand(:final voice, :final rootIsolateToken):
+      case ConfigureVoiceCommand(
+        :final voice,
+        :final rootIsolateToken,
+        :final initializeImmediately,
+      ):
         if (rootIsolateToken != null) {
           _rootIsolateToken = rootIsolateToken;
         }
-        _configureVoice(voice);
+        _configureVoice(voice, initializeImmediately: initializeImmediately);
 
       case LoadTextCommand(:final text, :final startSentenceIndex):
         // ignore: avoid_print
@@ -128,7 +132,12 @@ class TtsIsolateWorker {
     }
   }
 
-  Future<void> _configureVoice(TtsVoiceModel? voice) async {
+  TtsVoiceModel? _configuredVoice;
+
+  Future<void> _configureVoice(
+    TtsVoiceModel? voice, {
+    bool initializeImmediately = false,
+  }) async {
     // ignore: avoid_print
     print('>>> [TTS ISOLATE] _configureVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}) <<<');
     if (voice == null) {
@@ -146,12 +155,33 @@ class TtsIsolateWorker {
       return;
     }
 
-    // Guard: skip if the requested voice.id and engine are already active or currently initializing
-    if ((_isConfiguringVoice || _engineBridge != null) &&
+    if (_configuredVoice?.id == voice.id &&
+        _configuredVoice?.engineType == voice.engineType) {
+      if (initializeImmediately &&
+          (_engineBridge == null || !_engineBridge!.isInitialized)) {
+        await _initializeEngineBridge(voice);
+      }
+      return;
+    }
+
+    _configuredVoice = voice;
+    _state = _state.copyWith(
+      activeVoice: voice,
+      hasInstalledModels: true,
+    );
+    _emitState();
+
+    if (initializeImmediately || _state.isPlaying) {
+      await _initializeEngineBridge(voice);
+    }
+  }
+
+  Future<void> _initializeEngineBridge(TtsVoiceModel voice) async {
+    if (_isConfiguringVoice) return;
+    if (_engineBridge != null &&
+        _engineBridge!.isInitialized &&
         _activeVoiceId == voice.id &&
         _activeEngineType == voice.engineType) {
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] Skipping duplicate _configureVoice for "${voice.id}" (${voice.engineType}) <<<');
       return;
     }
 
@@ -180,12 +210,6 @@ class TtsIsolateWorker {
     } finally {
       _isConfiguringVoice = false;
     }
-
-    _state = _state.copyWith(
-      activeVoice: voice,
-      hasInstalledModels: true,
-    );
-    _emitState();
   }
 
   void _loadText(String rawText, int startSentenceIndex) {
@@ -254,11 +278,24 @@ class TtsIsolateWorker {
       return;
     }
 
+    final voiceToUse = _configuredVoice ?? _state.activeVoice;
     // Zero-model safeguard: do not throw or crash if no voice is available
-    if (_engineBridge == null && _state.activeVoice == null) {
+    if (_engineBridge == null && voiceToUse == null) {
       // ignore: avoid_print
       print('>>> [TTS ISOLATE] Play aborted: no engine bridge and no active voice <<<');
       _toMainPort.send(const TtsErrorEvent('No TTS engine downloaded.'));
+      return;
+    }
+
+    if (voiceToUse != null &&
+        (_engineBridge == null ||
+            !_engineBridge!.isInitialized ||
+            _activeVoiceId != voiceToUse.id)) {
+      await _initializeEngineBridge(voiceToUse);
+    }
+
+    if (_engineBridge == null || !_engineBridge!.isInitialized) {
+      _toMainPort.send(const TtsErrorEvent('Failed to initialize TTS engine.'));
       return;
     }
 

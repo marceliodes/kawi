@@ -67,6 +67,7 @@ class AudioPlaybackService {
       _audioBufferController.stream;
 
   bool _isInitialized = false;
+  Future<void>? _initFuture;
   TtsVoiceModel? _activeVoice;
 
   TtsState get currentState => stateNotifier.value;
@@ -82,7 +83,12 @@ class AudioPlaybackService {
   /// Initializes the background isolate and registers audio player listeners on the main UI thread.
   Future<void> initialize() async {
     if (_isInitialized) return;
+    if (_initFuture != null) return _initFuture!;
+    _initFuture = _doInitialize();
+    return _initFuture!;
+  }
 
+  Future<void> _doInitialize() async {
     // Listen for audio completion strictly on the main UI thread
     _playerCompleteSubscription = _audioPlayer.onPlayerComplete.listen((_) {
       _onAudioPlaybackComplete();
@@ -287,9 +293,9 @@ class AudioPlaybackService {
   }
 
   /// Sets the active voice model and informs the isolate.
-  void setActiveVoice(TtsVoiceModel? voice) {
+  void setActiveVoice(TtsVoiceModel? voice, {bool initializeImmediately = false}) {
     // ignore: avoid_print
-    print('>>> [Kawi TTS] setActiveVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}, installed: ${voice?.isInstalled}) <<<');
+    print('>>> [Kawi TTS] setActiveVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}, installed: ${voice?.isInstalled}, initImmediately: $initializeImmediately) <<<');
     _activeVoice = voice;
     stateNotifier.value = stateNotifier.value.copyWith(
       activeVoice: voice,
@@ -300,6 +306,7 @@ class AudioPlaybackService {
       ConfigureVoiceCommand(
         voice: voice,
         rootIsolateToken: RootIsolateToken.instance,
+        initializeImmediately: initializeImmediately,
       ),
     );
   }
@@ -326,6 +333,7 @@ class AudioPlaybackService {
   /// Zero-Model state guarantee: If no voice is available,
   /// this is a safe no-op that updates the error message without crashing.
   void play() {
+    initialize();
     // ignore: avoid_print
     print('[Kawi TTS] play called (hasVoice: ${_activeVoice != null}, isPaused: ${currentState.isPaused})');
     if (_activeVoice == null && !currentState.hasInstalledModels) {
@@ -408,6 +416,8 @@ class AudioPlaybackService {
 
   /// Cleans up player resources and isolates.
   void dispose() {
+    _initFuture = null;
+    _isInitialized = false;
     _isAudioPlaying = false;
     _prebufferedAudio = null;
     _playerCompleteSubscription?.cancel();

@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:epubx/epubx.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/document_models.dart';
@@ -9,10 +11,22 @@ import 'document_service.dart';
 import 'epub_parser.dart';
 
 /// In-memory cache holding parsed metadata, table of contents, and chapter AST nodes.
-class _CachedEpubBook {
+class CachedEpub {
   DocumentMetadata? metadata;
   List<TocEntry>? toc;
   final Map<int, List<DocumentNode>> chapterNodes = {};
+}
+
+class _InitialEpubData {
+  const _InitialEpubData({
+    required this.metadata,
+    required this.toc,
+    required this.chapterNodes,
+  });
+
+  final DocumentMetadata metadata;
+  final List<TocEntry> toc;
+  final Map<int, List<DocumentNode>> chapterNodes;
 }
 
 /// Simple Least-Recently-Used (LRU) cache.
@@ -52,16 +66,120 @@ class EpubService implements DocumentService {
 
   static const EpubService instance = EpubService();
 
-  static final _LruCache<String, _CachedEpubBook> _bookCache =
-      _LruCache<String, _CachedEpubBook>(10);
-  static final Map<String, Future<DocumentMetadata>> _inFlightMetadataLoads = {};
-  static final Map<String, Future<List<TocEntry>>> _inFlightTocLoads = {};
+  static final _LruCache<String, CachedEpub> _bookCache =
+      _LruCache<String, CachedEpub>(10);
+  static final Map<String, Future<CachedEpub>> _openingFutures = {};
+  static final Map<String, int> _pendingChapterIndexes = {};
   static final Map<String, Future<Map<int, List<DocumentNode>>>>
       _inFlightChapterLoads = {};
 
-  /// Clears the in-memory book and chapter cache.
+  /// Clears the in-memory book and chapter cache as well as in-flight opening locks.
   static void clearCache() {
     _bookCache.clear();
+    _openingFutures.clear();
+    _pendingChapterIndexes.clear();
+    _inFlightChapterLoads.clear();
+  }
+
+  /// Extracts the original cover image bytes (.jpg/.png/.webp) directly from the
+  /// EPUB ZIP archive without decoding the image into raw pixels.
+  Future<Uint8List?> extractEpubCoverBytes(String filePath) {
+    return EpubParser.extractEpubCoverBytes(filePath);
+  }
+
+  /// Opens an EPUB with single-flight locking, parsing the OPF spine/TOC and only the initial chapter.
+  Future<CachedEpub> openEpub(
+    String filePath, {
+    int initialChapterIndex = 0,
+    bool includeCover = false,
+  }) {
+    _pendingChapterIndexes[filePath] ??= initialChapterIndex;
+    if (initialChapterIndex != 0) {
+      _pendingChapterIndexes[filePath] = initialChapterIndex;
+    }
+
+    final cached = _bookCache.get(filePath);
+    if (cached != null &&
+        cached.metadata != null &&
+        (!includeCover || cached.metadata!.coverRgba != null) &&
+        cached.toc != null &&
+        cached.chapterNodes.containsKey(initialChapterIndex)) {
+      return Future.value(cached);
+    }
+
+    final inFlight = _openingFutures[filePath];
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = _doOpenEpub(
+      filePath,
+      initialChapterIndex: initialChapterIndex,
+      includeCover: includeCover,
+    );
+    _openingFutures[filePath] = future;
+    return future;
+  }
+
+  Future<CachedEpub> _doOpenEpub(
+    String filePath, {
+    int initialChapterIndex = 0,
+    bool includeCover = false,
+  }) async {
+    final sw = Stopwatch()..start();
+    try {
+      await Future.microtask(() {});
+      final targetChapter =
+          _pendingChapterIndexes[filePath] ?? initialChapterIndex;
+      final initialData = await Isolate.run(() => _openInitialEpubIsolate(
+            filePath,
+            targetChapter,
+            includeCover,
+          ));
+
+      final book = _bookCache.get(filePath) ?? CachedEpub();
+      book.metadata = initialData.metadata;
+      book.toc = initialData.toc;
+      book.chapterNodes.addAll(initialData.chapterNodes);
+      _bookCache.put(filePath, book);
+
+      sw.stop();
+      debugPrint('>>> [EPUB OPEN] Loaded initial chapter in ${sw.elapsedMilliseconds}ms');
+      return book;
+    } finally {
+      _openingFutures.remove(filePath);
+      _pendingChapterIndexes.remove(filePath);
+    }
+  }
+
+  static Future<_InitialEpubData> _openInitialEpubIsolate(
+    String filePath,
+    int initialChapterIndex,
+    bool includeCover,
+  ) async {
+    final file = File(filePath);
+    if (!file.existsSync()) {
+      throw StateError('EPUB file not found: $filePath');
+    }
+    final bytes = await file.readAsBytes();
+    final bookRef = await EpubParser.openBook(bytes);
+
+    final metadata = await EpubParser.extractMetadataFromRef(
+      bookRef,
+      includeCover: includeCover,
+    );
+    final toc = await EpubParser.extractTableOfContentsFromRef(bookRef);
+
+    final chapterMap = await _extractSingleChapterFromRef(
+      bookRef,
+      initialChapterIndex,
+    );
+
+    return _InitialEpubData(
+      metadata: metadata,
+      toc: toc,
+      chapterNodes: chapterMap,
+    );
   }
 
   @override
@@ -77,32 +195,16 @@ class EpubService implements DocumentService {
       return cached!.metadata!;
     }
 
-    final key = '$filePath:$includeCover';
-    if (_inFlightMetadataLoads.containsKey(key)) {
-      return _inFlightMetadataLoads[key]!;
-    }
-
-    final future = Isolate.run(() async {
-      final file = File(filePath);
-      if (!file.existsSync()) {
-        throw StateError('EPUB file not found: $filePath');
-      }
-      final bytes = await file.readAsBytes();
-      final bookRef = await EpubParser.openBook(bytes);
-      return EpubParser.extractMetadataFromRef(bookRef,
-          includeCover: includeCover);
-    });
-
-    _inFlightMetadataLoads[key] = future;
-    try {
-      final metadata = await future;
-      final book = _bookCache.get(filePath) ?? _CachedEpubBook();
-      book.metadata = metadata;
-      _bookCache.put(filePath, book);
-      return metadata;
-    } finally {
-      _inFlightMetadataLoads.remove(key);
-    }
+    final book = await openEpub(
+      filePath,
+      includeCover: includeCover,
+    );
+    return book.metadata ??
+        const DocumentMetadata(
+          title: null,
+          author: null,
+          pageCount: 1,
+        );
   }
 
   @override
@@ -112,30 +214,8 @@ class EpubService implements DocumentService {
       return cached!.toc!;
     }
 
-    if (_inFlightTocLoads.containsKey(filePath)) {
-      return _inFlightTocLoads[filePath]!;
-    }
-
-    final future = Isolate.run(() async {
-      final file = File(filePath);
-      if (!file.existsSync()) {
-        throw StateError('EPUB file not found: $filePath');
-      }
-      final bytes = await file.readAsBytes();
-      final bookRef = await EpubParser.openBook(bytes);
-      return EpubParser.extractTableOfContentsFromRef(bookRef);
-    });
-
-    _inFlightTocLoads[filePath] = future;
-    try {
-      final toc = await future;
-      final book = _bookCache.get(filePath) ?? _CachedEpubBook();
-      book.toc = toc;
-      _bookCache.put(filePath, book);
-      return toc;
-    } finally {
-      _inFlightTocLoads.remove(filePath);
-    }
+    final book = await openEpub(filePath);
+    return book.toc ?? const <TocEntry>[];
   }
 
   @override
@@ -148,19 +228,31 @@ class EpubService implements DocumentService {
       return cached.chapterNodes[chapterIndex]!;
     }
 
+    _pendingChapterIndexes[filePath] = chapterIndex;
+    if (!_bookCache.containsKey(filePath) &&
+        !_openingFutures.containsKey(filePath)) {
+      final book = await openEpub(filePath, initialChapterIndex: chapterIndex);
+      return book.chapterNodes[chapterIndex] ?? const <DocumentNode>[];
+    }
+
+    if (_openingFutures.containsKey(filePath)) {
+      final book = await _openingFutures[filePath]!;
+      if (book.chapterNodes.containsKey(chapterIndex)) {
+        return book.chapterNodes[chapterIndex]!;
+      }
+    }
+
     final key = '$filePath:$chapterIndex';
     Future<Map<int, List<DocumentNode>>>? inFlight = _inFlightChapterLoads[key];
 
     if (inFlight == null) {
-      inFlight = Isolate.run(() {
-        return _parseChaptersIsolate(filePath, chapterIndex);
-      });
+      inFlight = Isolate.run(() => _parseChaptersIsolate(filePath, chapterIndex));
       _inFlightChapterLoads[key] = inFlight;
     }
 
     try {
       final parsedMap = await inFlight;
-      final book = _bookCache.get(filePath) ?? _CachedEpubBook();
+      final book = _bookCache.get(filePath) ?? CachedEpub();
       book.chapterNodes.addAll(parsedMap);
       _bookCache.put(filePath, book);
       return book.chapterNodes[chapterIndex] ?? const <DocumentNode>[];
@@ -179,8 +271,13 @@ class EpubService implements DocumentService {
     }
     final bytes = await file.readAsBytes();
     final bookRef = await EpubParser.openBook(bytes);
+    return _extractSingleChapterFromRef(bookRef, requestedIndex);
+  }
 
-    // Resolve the single requested spine/chapter HTML without eagerly unpacking others
+  static Future<Map<int, List<DocumentNode>>> _extractSingleChapterFromRef(
+    EpubBookRef bookRef,
+    int requestedIndex,
+  ) async {
     final chapters = await bookRef.getChapters();
     String? html;
 

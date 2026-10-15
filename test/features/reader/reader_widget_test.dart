@@ -115,7 +115,7 @@ void main() {
       );
 
       // Chapter title shown in top navigation bar
-      expect(find.text('Chapter 1'), findsWidgets);
+      expect(find.text('Book One'), findsWidgets);
     },
   );
 
@@ -439,7 +439,7 @@ void main() {
       // Index-stable continuous view uses ScrollablePositionedList
       expect(find.byType(ScrollablePositionedList), findsOneWidget);
       // Prepend chapter header
-      expect(find.text('Chapter 1'), findsWidgets);
+      expect(find.text('Book One'), findsWidgets);
       // AST nodes rendered
       expect(find.textContaining('First paragraph of text.'), findsWidgets);
       // No "Next Chapter" or "Previous Chapter" buttons

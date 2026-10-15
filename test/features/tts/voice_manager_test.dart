@@ -15,18 +15,19 @@ class FakeVoiceManagerService extends VoiceManagerService {
       : _voices = initialVoices ??
             [
               const TtsVoiceModel(
+                id: 'piper-en_US-lessac-medium',
+                name: 'Piper - Lessac',
+                engineType: TtsEngineType.piper,
+                isInstalled: true,
+                isDefault: true,
+                sizeBytes: 36 * 1024 * 1024,
+              ),
+              const TtsVoiceModel(
                 id: 'kokoro-default',
                 name: 'Kokoro - Default (af)',
                 engineType: TtsEngineType.kokoro,
                 isInstalled: true,
-                isDefault: true,
                 sizeBytes: 86 * 1024 * 1024,
-              ),
-              const TtsVoiceModel(
-                id: 'piper-en_US-lessac-medium',
-                name: 'Piper - Lessac',
-                engineType: TtsEngineType.piper,
-                sizeBytes: 36 * 1024 * 1024,
               ),
             ];
 
@@ -166,20 +167,20 @@ void main() {
       final state = container.read(voiceManagerProvider);
       expect(state.voices.length, equals(2));
       expect(state.hasInstalledModels, isTrue);
-      expect(state.activeVoice?.id, equals('kokoro-default'));
-      expect(state.totalDiskUsageBytes, equals(86 * 1024 * 1024));
+      expect(state.activeVoice?.id, equals('piper-en_US-lessac-medium'));
+      expect(state.totalDiskUsageBytes, equals((36 + 86) * 1024 * 1024));
     });
 
     test('deleting active model updates activeVoice and transitions to zero-model state', () async {
       final fakeService = FakeVoiceManagerService(
         initialVoices: [
           const TtsVoiceModel(
-            id: 'kokoro-default',
-            name: 'Kokoro - Default (af)',
-            engineType: TtsEngineType.kokoro,
+            id: 'piper-en_US-lessac-medium',
+            name: 'Piper - Lessac',
+            engineType: TtsEngineType.piper,
             isInstalled: true,
             isDefault: true,
-            sizeBytes: 86 * 1024 * 1024,
+            sizeBytes: 36 * 1024 * 1024,
           ),
         ],
       );
@@ -199,7 +200,7 @@ void main() {
 
       final stateAfterDelete = container.read(voiceManagerProvider);
       expect(fakeService.deleteCalled, isTrue);
-      expect(fakeService.lastDeleted?.id, equals('kokoro-default'));
+      expect(fakeService.lastDeleted?.id, equals('piper-en_US-lessac-medium'));
       expect(stateAfterDelete.hasInstalledModels, isFalse);
       expect(stateAfterDelete.activeVoice, isNull);
       expect(container.read(hasInstalledTtsModelsProvider), isFalse);

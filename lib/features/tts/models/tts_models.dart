@@ -212,9 +212,11 @@ class ConfigureVoiceCommand extends TtsCommand {
   const ConfigureVoiceCommand({
     required this.voice,
     this.rootIsolateToken,
+    this.initializeImmediately = false,
   });
   final TtsVoiceModel? voice;
   final RootIsolateToken? rootIsolateToken;
+  final bool initializeImmediately;
 }
 
 class LoadTextCommand extends TtsCommand {

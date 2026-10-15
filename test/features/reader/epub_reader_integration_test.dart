@@ -16,6 +16,7 @@ import 'package:kawi/features/reader/providers/document_content_provider.dart';
 import 'package:kawi/features/reader/providers/reader_settings_provider.dart';
 import 'package:kawi/features/reader/screens/reader_screen.dart';
 import 'package:kawi/features/reader/services/chapter_paginator.dart';
+import 'package:kawi/features/reader/services/document_extractor.dart';
 import 'package:kawi/features/reader/services/epub_service.dart';
 import 'package:kawi/features/reader/widgets/reader_canvas.dart';
 import 'package:kawi/features/tts/models/tts_models.dart';
@@ -209,7 +210,7 @@ void main() {
       expect(find.byType(ScrollablePositionedList), findsOneWidget);
       expect(find.byType(SelectableText), findsWidgets);
       // Chapter header should be present
-      expect(find.text('Chapter 1'), findsWidgets);
+      expect(find.textContaining('Rabbit-Hole'), findsWidgets);
     });
 
     testWidgets('TTS highlighting renders active sentence span without word fragmentation',
@@ -508,7 +509,7 @@ void main() {
 
       // Verify index-stable ScrollablePositionedList renders chapters continuously
       expect(find.byType(ScrollablePositionedList), findsOneWidget);
-      expect(find.text('Chapter 1'), findsWidgets);
+      expect(find.textContaining('Rabbit-Hole'), findsWidgets);
     });
 
     test('EpubService lazy-parses only requested initial chapter in <250ms', () async {
@@ -925,6 +926,291 @@ void main() {
       final snippet = canvasKey.currentState?.getFirstVisibleTextSnippet();
       expect(snippet, isNotNull);
       expect(snippet, contains('It was the best of times'));
+    });
+
+    test('Single-flight archive caching deduplicates concurrent book open requests and opens in <300ms', () async {
+      if (!epubFile.existsSync()) return;
+
+      EpubService.clearCache();
+      final sw = Stopwatch()..start();
+
+      final results = await Future.wait([
+        EpubService.instance.extractMetadata(epubFile.path, includeCover: false),
+        EpubService.instance.extractTableOfContents(epubFile.path),
+        EpubService.instance.extractChapterNodes(epubFile.path, 1),
+        EpubService.instance.openEpub(epubFile.path, initialChapterIndex: 1),
+      ]);
+      sw.stop();
+
+      expect(results[0], isA<DocumentMetadata>());
+      expect(results[1], isA<List<TocEntry>>());
+      expect(results[2], isA<List<DocumentNode>>());
+      expect(results[3], isA<CachedEpub>());
+      expect(sw.elapsedMilliseconds, lessThan(300));
+
+      final cachedBook = results[3] as CachedEpub;
+      expect(cachedBook.metadata, isNotNull);
+      expect(cachedBook.toc, isNotNull);
+      expect(cachedBook.chapterNodes.containsKey(1), isTrue);
+
+      EpubService.clearCache();
+    });
+
+    testWidgets(
+        'Pressing top-bar TTS Play button on Page K of a paginated chapter starts speaking from first sentence on Page K',
+        (tester) async {
+      final mockTtsNotifier = _MockEpubTtsNotifier();
+
+      const chunk0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 0,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 25,
+        nodes: [
+          ParagraphNode([TextSegment('First sentence of page 0.')]),
+        ],
+      );
+
+      const chunk1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 0,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 50,
+        nodes: [
+          ParagraphNode([TextSegment('First sentence of page 1. Second sentence of page 1.')]),
+        ],
+      );
+
+      final chunks = [chunk0, chunk1];
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockTtsNotifier),
+          chapterPagesProvider.overrideWith((ref, arg) async => chunks),
+          documentChapterNodesProvider.overrideWith((ref, arg) async => [
+                chunk0.nodes.first,
+                chunk1.nodes.first,
+              ]),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      // Navigate to Page 1
+      final rightArrow = find.byIcon(PhosphorIconsLight.caretRight);
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+
+      // Tap top-bar Read Aloud button
+      final playButton = find.byTooltip('Read Aloud (TTS)');
+      await tester.tap(playButton);
+      await tester.pumpAndSettle();
+
+      expect(mockTtsNotifier.speakCallCount, 1);
+      expect(mockTtsNotifier.lastSpokenText, startsWith('First sentence of page 1.'));
+      expect(mockTtsNotifier.lastSpokenText, isNot(contains('First sentence of page 0.')));
+    });
+
+    testWidgets(
+        'Play from here in Paginated Mode starts speaking from highlighted sentence',
+        (tester) async {
+      final mockTtsNotifier = _MockEpubTtsNotifier();
+
+      const chunk0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 0,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 25,
+        nodes: [
+          ParagraphNode([TextSegment('First sentence of page 0.')]),
+        ],
+      );
+
+      const chunk1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 0,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 50,
+        nodes: [
+          ParagraphNode([TextSegment('First sentence of page 1. Second sentence of page 1.')]),
+        ],
+      );
+
+      final chunks = [chunk0, chunk1];
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockTtsNotifier),
+          chapterPagesProvider.overrideWith((ref, arg) async => chunks),
+          documentChapterNodesProvider.overrideWith((ref, arg) async => [
+                chunk0.nodes.first,
+                chunk1.nodes.first,
+              ]),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      // Trigger Play from here with a phrase on page 1
+      final readerCanvas = tester.widget<ReaderCanvas>(find.byType(ReaderCanvas));
+      readerCanvas.onPlayFromHere?.call('Second sentence of page 1.');
+      await tester.pumpAndSettle();
+
+      expect(mockTtsNotifier.speakCallCount, 1);
+      expect(mockTtsNotifier.lastSpokenText, startsWith('Second sentence of page 1.'));
+    });
+
+    testWidgets(
+        'Backward chapter navigation in Paginated Mode uses sentinel to land on the last page of preceding chapter',
+        (tester) async {
+      tester.view.physicalSize = const Size(1200, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      // Chapter 0 has 2 pages
+      const ch0Page0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 0,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 0, Page 0 content here.')]),
+        ],
+      );
+      const ch0Page1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 0,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 0, Page 1 content here.')]),
+        ],
+      );
+
+      // Chapter 1 has 1 page
+      const ch1Page0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 1,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 1, Page 0 content here.')]),
+        ],
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          chapterPagesProvider.overrideWith((ref, arg) async {
+            if (arg.chapterIndex == 0) {
+              return [ch0Page0, ch0Page1];
+            } else {
+              return [ch1Page0];
+            }
+          }),
+          documentChapterNodesProvider.overrideWith((ref, arg) async {
+            if (arg.chapterIndex == 0) {
+              return [ch0Page0.nodes.first, ch0Page1.nodes.first];
+            } else {
+              return [ch1Page0.nodes.first];
+            }
+          }),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      // Initially at Chapter 0, Page 0
+      expect(find.text('Page 1 of 2'), findsOneWidget);
+      expect(find.text('Chapter 0, Page 0 content here.'), findsOneWidget);
+
+      final rightArrow = find.byIcon(PhosphorIconsLight.caretRight);
+      final leftArrow = find.byIcon(PhosphorIconsLight.caretLeft);
+
+      // Tap Next Page -> Chapter 0, Page 1 (Page 2 of 2)
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 2 of 2'), findsOneWidget);
+      expect(find.text('Chapter 0, Page 1 content here.'), findsOneWidget);
+
+      // Tap Next Page -> Chapter 1, Page 0 (Page 1 of 1)
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 1 of 1'), findsOneWidget);
+      expect(find.text('Chapter 1, Page 0 content here.'), findsOneWidget);
+
+      // Now on Chapter 1 Page 0: Tap Previous Page -> Must navigate backward to Chapter 0 Page 1 (Page 2 of 2)!
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 2 of 2'), findsOneWidget);
+      expect(find.text('Chapter 0, Page 1 content here.'), findsOneWidget);
+
+      // From Chapter 0 Page 1: Tap Next Page -> Advances back to Chapter 1 Page 0
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 1 of 1'), findsOneWidget);
+      expect(find.text('Chapter 1, Page 0 content here.'), findsOneWidget);
     });
   });
 }

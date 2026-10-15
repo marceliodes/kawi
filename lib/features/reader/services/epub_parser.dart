@@ -1,9 +1,15 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
+import 'package:collection/collection.dart';
 import 'package:epubx/epubx.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:path/path.dart' as p;
+import 'package:xml/xml.dart' as xml;
 
 import '../models/document_models.dart';
 import 'document_extractor.dart';
@@ -39,6 +45,260 @@ class EpubParser {
     'figure',
     'figcaption',
   };
+
+  /// Extracts the original cover image bytes (.jpg/.png/.webp) directly from the
+  /// EPUB ZIP archive without decoding the image into raw pixels.
+  static Future<Uint8List?> extractEpubCoverBytes(String filePath) async {
+    return Isolate.run(() => _extractEpubCoverBytesSync(filePath));
+  }
+
+  static Uint8List? _extractEpubCoverBytesSync(String filePath) {
+    final file = File(filePath);
+    if (!file.existsSync()) return null;
+    final bytes = file.readAsBytesSync();
+    final archive = ZipDecoder().decodeBytes(bytes);
+
+    // 1. Locate container.xml to find root OPF file path
+    final containerFile = archive.findFile('META-INF/container.xml');
+    String opfPath = '';
+    if (containerFile != null) {
+      try {
+        final containerContent =
+            utf8.decode(containerFile.content as List<int>, allowMalformed: true);
+        final doc = xml.XmlDocument.parse(containerContent);
+        final rootfile = doc.findAllElements('rootfile').firstOrNull;
+        opfPath = rootfile?.getAttribute('full-path') ?? '';
+      } catch (_) {}
+    }
+
+    ArchiveFile? opfArchiveFile;
+    if (opfPath.isNotEmpty) {
+      opfArchiveFile = archive.findFile(opfPath);
+    }
+    // Fallback: look for any .opf file in archive
+    opfArchiveFile ??=
+        archive.files.firstWhereOrNull((f) => f.name.toLowerCase().endsWith('.opf'));
+    if (opfArchiveFile == null) return null;
+
+    final opfDir = p.dirname(opfArchiveFile.name);
+    final opfContent =
+        utf8.decode(opfArchiveFile.content as List<int>, allowMalformed: true);
+    xml.XmlDocument opfDoc;
+    try {
+      opfDoc = xml.XmlDocument.parse(opfContent);
+    } catch (_) {
+      return null;
+    }
+
+    String? coverHref;
+
+    // Strategy A: Check <item properties="cover-image" href="..."> (EPUB 3)
+    for (final item in opfDoc.findAllElements('item')) {
+      final properties = item.getAttribute('properties')?.toLowerCase() ?? '';
+      if (properties.split(RegExp(r'\s+')).contains('cover-image')) {
+        coverHref = item.getAttribute('href');
+        if (coverHref != null && coverHref.isNotEmpty) break;
+      }
+    }
+
+    // Strategy B: Check <meta name="cover" content="cover_id"/> (EPUB 2)
+    if (coverHref == null || coverHref.isEmpty) {
+      String? coverId;
+      for (final meta in opfDoc.findAllElements('meta')) {
+        if (meta.getAttribute('name')?.toLowerCase() == 'cover') {
+          coverId = meta.getAttribute('content');
+          break;
+        }
+      }
+      if (coverId != null && coverId.isNotEmpty) {
+        for (final item in opfDoc.findAllElements('item')) {
+          if (item.getAttribute('id')?.toLowerCase() == coverId.toLowerCase()) {
+            coverHref = item.getAttribute('href');
+            break;
+          }
+        }
+      }
+    }
+
+    // Strategy C: Check manifest items where id or href contains "cover" and media-type starts with "image/"
+    if (coverHref == null || coverHref.isEmpty) {
+      for (final item in opfDoc.findAllElements('item')) {
+        final id = item.getAttribute('id')?.toLowerCase() ?? '';
+        final href = item.getAttribute('href')?.toLowerCase() ?? '';
+        final mediaType = item.getAttribute('media-type')?.toLowerCase() ?? '';
+        if (mediaType.startsWith('image/') &&
+            (id.contains('cover') || href.contains('cover'))) {
+          coverHref = item.getAttribute('href');
+          break;
+        }
+      }
+    }
+
+    // Strategy D: First image in first spine chapter item or first image in manifest
+    if (coverHref == null || coverHref.isEmpty) {
+      final firstSpineItemRef = opfDoc.findAllElements('itemref').firstOrNull;
+      if (firstSpineItemRef != null) {
+        final idref = firstSpineItemRef.getAttribute('idref');
+        final spineItem = opfDoc
+            .findAllElements('item')
+            .firstWhereOrNull((it) => it.getAttribute('id') == idref);
+        final spineHref = spineItem?.getAttribute('href');
+        if (spineHref != null) {
+          final resolvedSpinePath = opfDir.isEmpty || opfDir == '.'
+              ? spineHref
+              : p.normalize(p.join(opfDir, spineHref)).replaceAll(r'\', '/');
+          final spineFile = _findFileInArchive(archive, resolvedSpinePath);
+          if (spineFile != null) {
+            final htmlContent =
+                utf8.decode(spineFile.content as List<int>, allowMalformed: true);
+            final htmlDoc = html_parser.parse(htmlContent);
+            String? src = htmlDoc.querySelector('img')?.attributes['src'] ??
+                htmlDoc.querySelector('image')?.attributes['xlink:href'] ??
+                htmlDoc.querySelector('image')?.attributes['href'];
+            if (src == null || src.isEmpty) {
+              for (final el in htmlDoc.querySelectorAll('image')) {
+                src = el.attributes['xlink:href'] ??
+                    el.attributes['href'] ??
+                    el.attributes['src'];
+                if (src != null && src.isNotEmpty) break;
+              }
+            }
+            if (src == null || src.isEmpty) {
+              final match = RegExp(
+                r'''<(?:img|image)[^>]*(?:src|href|xlink:href)\s*=\s*["']([^"']+)["']''',
+                caseSensitive: false,
+              ).firstMatch(htmlContent);
+              if (match != null) {
+                src = match.group(1);
+              }
+            }
+            if (src != null && src.isNotEmpty) {
+              final spineFileDir = p.dirname(resolvedSpinePath);
+              final decodedSrc = Uri.decodeComponent(src);
+              final resolvedSrc = spineFileDir.isEmpty || spineFileDir == '.'
+                  ? decodedSrc
+                  : p.normalize(p.join(spineFileDir, decodedSrc)).replaceAll(r'\', '/');
+              final found = _findFileInArchive(archive, resolvedSrc);
+              if (found != null) {
+                return Uint8List.fromList(found.content as List<int>);
+              }
+            }
+          }
+        }
+      }
+
+      // Check any HTML item in manifest with 'cover' in id or href
+      for (final item in opfDoc.findAllElements('item')) {
+        final id = item.getAttribute('id')?.toLowerCase() ?? '';
+        final href = item.getAttribute('href')?.toLowerCase() ?? '';
+        final mediaType = item.getAttribute('media-type')?.toLowerCase() ?? '';
+        if (mediaType.contains('html') && (id.contains('cover') || href.contains('cover'))) {
+          final htmlHref = item.getAttribute('href');
+          if (htmlHref != null) {
+            final resolvedHtmlPath = opfDir.isEmpty || opfDir == '.'
+                ? htmlHref
+                : p.normalize(p.join(opfDir, htmlHref)).replaceAll(r'\', '/');
+            final htmlFile = _findFileInArchive(archive, resolvedHtmlPath);
+            if (htmlFile != null) {
+              final content =
+                  utf8.decode(htmlFile.content as List<int>, allowMalformed: true);
+              final doc = html_parser.parse(content);
+              String? candidateSrc = doc.querySelector('img')?.attributes['src'] ??
+                  doc.querySelector('image')?.attributes['xlink:href'] ??
+                  doc.querySelector('image')?.attributes['href'];
+              if (candidateSrc == null || candidateSrc.isEmpty) {
+                for (final el in doc.querySelectorAll('image')) {
+                  candidateSrc = el.attributes['xlink:href'] ??
+                      el.attributes['href'] ??
+                      el.attributes['src'];
+                  if (candidateSrc != null && candidateSrc.isNotEmpty) break;
+                }
+              }
+              if (candidateSrc == null || candidateSrc.isEmpty) {
+                final m = RegExp(
+                  r'''<(?:img|image)[^>]*(?:src|href|xlink:href)\s*=\s*["']([^"']+)["']''',
+                  caseSensitive: false,
+                ).firstMatch(content);
+                candidateSrc = m?.group(1);
+              }
+              if (candidateSrc != null && candidateSrc.isNotEmpty) {
+                final candidateDir = p.dirname(resolvedHtmlPath);
+                final decoded = Uri.decodeComponent(candidateSrc);
+                final resolvedSrc = candidateDir.isEmpty || candidateDir == '.'
+                    ? decoded
+                    : p.normalize(p.join(candidateDir, decoded)).replaceAll(r'\', '/');
+                final found = _findFileInArchive(archive, resolvedSrc);
+                if (found != null) {
+                  return Uint8List.fromList(found.content as List<int>);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Fallback: first image in manifest
+      for (final item in opfDoc.findAllElements('item')) {
+        final mediaType = item.getAttribute('media-type')?.toLowerCase() ?? '';
+        if (mediaType.startsWith('image/')) {
+          coverHref = item.getAttribute('href');
+          break;
+        }
+      }
+    }
+
+    if (coverHref != null && coverHref.isNotEmpty) {
+      final decodedHref = Uri.decodeComponent(coverHref);
+      final resolvedPath = opfDir.isEmpty || opfDir == '.'
+          ? decodedHref
+          : p.normalize(p.join(opfDir, decodedHref)).replaceAll(r'\', '/');
+
+      final found = _findFileInArchive(archive, resolvedPath);
+      if (found != null) {
+        return Uint8List.fromList(found.content as List<int>);
+      }
+    }
+
+    return null;
+  }
+
+  static ArchiveFile? _findFileInArchive(Archive archive, String targetPath) {
+    var cleanTarget =
+        targetPath.replaceAll(r'\', '/').replaceFirst(RegExp(r'^\/+'), '');
+    while (cleanTarget.startsWith('../') || cleanTarget.startsWith('./')) {
+      cleanTarget = cleanTarget.replaceFirst(RegExp(r'^\.\.?\/'), '');
+    }
+    final lowerTarget = cleanTarget.toLowerCase();
+    final baseTarget = p.basename(cleanTarget).toLowerCase();
+
+    // 1. Exact match
+    final exact = archive.findFile(cleanTarget);
+    if (exact != null) return exact;
+
+    // 2. Case-insensitive full path
+    for (final file in archive.files) {
+      final name = file.name.replaceAll(r'\', '/').replaceFirst(RegExp(r'^\/+'), '');
+      if (name.toLowerCase() == lowerTarget) return file;
+    }
+
+    // 3. Suffix match
+    for (final file in archive.files) {
+      final name = file.name.replaceAll(r'\', '/').replaceFirst(RegExp(r'^\/+'), '');
+      if (name.toLowerCase().endsWith('/$lowerTarget') ||
+          name.toLowerCase().endsWith(lowerTarget)) {
+        return file;
+      }
+    }
+
+    // 4. Basename match
+    for (final file in archive.files) {
+      if (p.basename(file.name).toLowerCase() == baseTarget) {
+        return file;
+      }
+    }
+
+    return null;
+  }
 
   /// Opens an EPUB book without unpacking chapter content or images (fast/lazy loading).
   static Future<EpubBookRef> openBook(Uint8List bytes) {

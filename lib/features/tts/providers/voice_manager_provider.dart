@@ -1,6 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/database/database_provider.dart';
 import '../models/tts_models.dart';
+import '../services/tts_engine_bridge.dart';
 import '../services/voice_manager_service.dart';
 import 'tts_provider.dart';
 
@@ -90,16 +93,48 @@ class VoiceManagerNotifier extends Notifier<VoiceManagerState> {
     try {
       final voices = await _service.loadAllVoices();
       final diskUsage = await _service.calculateTotalDiskUsage();
+      if (!ref.mounted) return;
 
-      TtsVoiceModel? active = state.activeVoice;
-      final activeId = active?.id;
-      if (active == null || !voices.any((v) => v.id == activeId && v.isInstalled)) {
-        // Pick first installed voice or null
-        final firstInstalled = voices.where((v) => v.isInstalled).firstOrNull;
-        active = firstInstalled;
-      } else {
-        // Update active voice reference from list
-        active = voices.firstWhere((v) => v.id == activeId);
+      String? savedVoiceId;
+      try {
+        final db = ref.read(databaseProvider);
+        savedVoiceId = await db.getSetting('active_voice_id');
+      } catch (e) {
+        debugPrint('Failed to read active voice setting: $e');
+      }
+      if (!ref.mounted) return;
+
+      TtsVoiceModel? active;
+      if (savedVoiceId != null) {
+        active = voices.where((v) => v.id == savedVoiceId && v.isInstalled).firstOrNull;
+      }
+
+      if (active == null) {
+        final currentActiveId = state.activeVoice?.id;
+        if (currentActiveId != null && voices.any((v) => v.id == currentActiveId && v.isInstalled)) {
+          active = voices.firstWhere((v) => v.id == currentActiveId);
+        }
+      }
+
+      // If active voice is Kokoro but Kokoro is unsupported, fall back to installed Piper
+      if (active != null && active.engineType == TtsEngineType.kokoro && !KokoroEngineBridge.isKokoroSupported) {
+        final installed = voices.where((v) => v.isInstalled).toList();
+        final piperVoice = installed.where((v) => v.engineType == TtsEngineType.piper).firstOrNull;
+        if (piperVoice != null) {
+          active = piperVoice;
+          try {
+            final db = ref.read(databaseProvider);
+            db.setSetting('active_voice_id', active.id);
+            db.setSetting('active_voice_engine', active.engineType.name);
+          } catch (_) {}
+        }
+      }
+
+      if (active == null) {
+        // Fallback: Piper ('piper-en_US-lessac-medium') if installed, or any installed Piper, or null
+        final installed = voices.where((v) => v.isInstalled).toList();
+        active = installed.where((v) => v.id == 'piper-en_US-lessac-medium').firstOrNull;
+        active ??= installed.where((v) => v.engineType == TtsEngineType.piper).firstOrNull;
       }
 
       state = state.copyWith(
@@ -109,21 +144,27 @@ class VoiceManagerNotifier extends Notifier<VoiceManagerState> {
         totalDiskUsageBytes: diskUsage,
         isLoading: false,
       );
-
-      // Forward active voice to AudioPlaybackService
-      ref.read(audioPlaybackServiceProvider).setActiveVoice(active);
     } catch (e) {
-      state = state.copyWith(
-        isLoading: false,
-        errorMessage: 'Failed to scan voice models: $e',
-      );
+      if (ref.mounted) {
+        state = state.copyWith(
+          isLoading: false,
+          errorMessage: 'Failed to scan voice models: $e',
+        );
+      }
     }
   }
 
-  void selectVoice(TtsVoiceModel voice) {
+  void selectVoice(TtsVoiceModel voice, {bool initializeImmediately = false}) {
     if (!voice.isInstalled) return;
     state = state.copyWith(activeVoice: voice);
-    ref.read(audioPlaybackServiceProvider).setActiveVoice(voice);
+    ref.read(audioPlaybackServiceProvider).setActiveVoice(voice, initializeImmediately: initializeImmediately);
+    try {
+      final db = ref.read(databaseProvider);
+      db.setSetting('active_voice_id', voice.id);
+      db.setSetting('active_voice_engine', voice.engineType.name);
+    } catch (e) {
+      debugPrint('Failed to persist active voice setting: $e');
+    }
   }
 
   Future<void> downloadVoice(TtsVoiceModel voice) async {

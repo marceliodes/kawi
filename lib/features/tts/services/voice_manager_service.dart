@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/tts_models.dart';
+import 'tts_engine_bridge.dart';
 
 /// Service for managing local TTS voice models (downloading, switching, deleting).
 class VoiceManagerService {
@@ -22,6 +23,7 @@ class VoiceManagerService {
       id: 'piper-en_US-lessac-medium',
       name: 'Piper - Lessac',
       engineType: TtsEngineType.piper,
+      isDefault: true,
       sizeBytes: 36 * 1024 * 1024,
       downloadUrl:
           'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx',
@@ -62,7 +64,6 @@ class VoiceManagerService {
       id: 'kokoro-default',
       name: 'Kokoro - Default (af)',
       engineType: TtsEngineType.kokoro,
-      isDefault: true,
       voiceStyle: 'Default',
       sizeBytes: 86 * 1024 * 1024,
       description: 'Default Kokoro 82M quantized neural diffusion voice (~86 MB).',
@@ -133,15 +134,17 @@ class VoiceManagerService {
     // Non-blocking Kokoro model status check (checks existence & size rather than hashing 85MB on UI thread)
     bool kokoroReady = false;
     String? resolvedKokoroPath;
-    try {
-      final kokoroDir = await _getKokoroDirectoryPath();
-      final modelFile = File(p.join(kokoroDir, 'model_quantized.onnx'));
-      if (modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024) {
-        kokoroReady = true;
-        resolvedKokoroPath = modelFile.path;
+    if (KokoroEngineBridge.isKokoroSupported) {
+      try {
+        final kokoroDir = await _getKokoroDirectoryPath();
+        final modelFile = File(p.join(kokoroDir, 'model_quantized.onnx'));
+        if (modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024) {
+          kokoroReady = true;
+          resolvedKokoroPath = modelFile.path;
+        }
+      } catch (_) {
+        kokoroReady = false;
       }
-    } catch (_) {
-      kokoroReady = false;
     }
 
     for (final kv in _catalogKokoroVoices) {
@@ -149,6 +152,9 @@ class VoiceManagerService {
         kv.copyWith(
           isInstalled: kokoroReady,
           localPath: kokoroReady ? resolvedKokoroPath : null,
+          description: KokoroEngineBridge.isKokoroSupported
+              ? kv.description
+              : 'Kokoro engine unsupported on this runtime. Piper fallback active.',
         ),
       );
     }

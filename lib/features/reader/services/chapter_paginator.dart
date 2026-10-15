@@ -18,6 +18,7 @@ class ChapterPaginator {
     required TextStyle textStyle,
     required double paragraphSpacing,
     int chapterIndex = 0,
+    double safetyBuffer = 24.0,
   }) {
     if (nodes.isEmpty || maxWidth <= 0 || maxHeight <= 0) {
       return [
@@ -35,7 +36,10 @@ class ChapterPaginator {
 
     final pages = <PageChunk>[];
     var currentPageNodes = <DocumentNode>[];
-    var remainingHeight = maxHeight;
+    final effectiveBuffer =
+        maxHeight > 120.0 ? safetyBuffer : (maxHeight > 50.0 ? 8.0 : 0.0);
+    final usableHeight = (maxHeight - effectiveBuffer).clamp(20.0, maxHeight);
+    var remainingHeight = usableHeight;
 
     var pageStartNodeIndex = 0;
     var pageStartCharOffset = 0;
@@ -53,7 +57,7 @@ class ChapterPaginator {
         endCharOffset: pageEndCharOffset,
       ));
       currentPageNodes = [];
-      remainingHeight = maxHeight;
+      remainingHeight = usableHeight;
     }
 
     var i = 0;
@@ -97,7 +101,7 @@ class ChapterPaginator {
         ));
 
         // Reset pagination height for subsequent nodes
-        remainingHeight = maxHeight;
+        remainingHeight = usableHeight;
         inFlightNode = null;
         inFlightCharOffset = 0;
         i++;
@@ -127,10 +131,12 @@ class ChapterPaginator {
       );
       painter.layout(maxWidth: maxWidth);
 
-      if (painter.height <= remainingHeight) {
+      final nodeTotalHeight = painter.height + paragraphSpacing;
+
+      if (nodeTotalHeight <= remainingHeight) {
         // Fits completely on the current page
         currentPageNodes.add(currentNode);
-        remainingHeight -= (painter.height + paragraphSpacing);
+        remainingHeight -= nodeTotalHeight;
 
         final nodeLength = currentNode is ParagraphNode
             ? currentNode.plainText.length
@@ -143,13 +149,21 @@ class ChapterPaginator {
         inFlightCharOffset = 0;
         i++;
       } else {
-        // Exceeds remaining height: measure fitting lines
+        // Exceeds remaining height
+        if (currentPageNodes.isNotEmpty) {
+          // Push entire node to the next page chunk
+          finalizePage();
+          continue;
+        }
+
+        // The page is empty, so a single giant paragraph exceeds the full page:
+        // Split it cleanly across pages
         final lineMetrics = painter.computeLineMetrics();
         var accumulatedHeight = 0.0;
         var fittingLinesCount = 0;
 
         for (final line in lineMetrics) {
-          if (accumulatedHeight + line.height <= remainingHeight) {
+          if (accumulatedHeight + line.height + paragraphSpacing <= usableHeight) {
             accumulatedHeight += line.height;
             fittingLinesCount++;
           } else {
@@ -157,16 +171,11 @@ class ChapterPaginator {
           }
         }
 
-        // If not even a single line fits
+        // If not even a single line fits with spacing, force 1 line so forward progress is guaranteed
         if (fittingLinesCount == 0) {
-          if (currentPageNodes.isNotEmpty) {
-            // Push entire node to the next page
-            finalizePage();
-            continue;
-          }
-          // The page is empty but height is smaller than line height: force 1 line
           fittingLinesCount = 1;
-          accumulatedHeight = lineMetrics.isNotEmpty ? lineMetrics.first.height : remainingHeight;
+          accumulatedHeight =
+              lineMetrics.isNotEmpty ? lineMetrics.first.height : usableHeight;
         }
 
         final targetY = accumulatedHeight > 0
@@ -181,18 +190,13 @@ class ChapterPaginator {
             : (currentNode as HeadingNode).plainText;
 
         // Walk backward to nearest whitespace boundary to avoid cutting words
-        while (splitOffset > 0 && !RegExp(r'\s').hasMatch(plainText[splitOffset - 1])) {
+        while (
+            splitOffset > 0 && !RegExp(r'\s').hasMatch(plainText[splitOffset - 1])) {
           splitOffset--;
         }
 
-        // If no whitespace was found before splitOffset
+        // If no whitespace was found before splitOffset, slice at raw offset (at least 1 character)
         if (splitOffset <= 0) {
-          if (currentPageNodes.isNotEmpty) {
-            // Push entire node to next page
-            finalizePage();
-            continue;
-          }
-          // On an empty page, slice at raw offset (at least 1 character)
           splitOffset = pos.offset.clamp(1, plainText.length);
         }
 

@@ -2,11 +2,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tts_models.dart';
 import '../services/audio_playback_service.dart';
+import 'voice_manager_provider.dart';
 
 /// Provider for the singleton [AudioPlaybackService].
 final ttsServiceProvider = Provider<AudioPlaybackService>((ref) {
   final service = AudioPlaybackService();
-  service.initialize();
   ref.onDispose(service.dispose);
   return service;
 });
@@ -41,12 +41,20 @@ class TtsStateNotifier extends Notifier<TtsState> {
   void speak(String text, {int startSentenceIndex = 0}) {
     // ignore: avoid_print
     print('>>> [TTS NOTIFIER] speak (${text.length} chars) <<<');
+    final activeVoice = ref.read(voiceManagerProvider).activeVoice;
+    if (activeVoice != null) {
+      ref.read(ttsServiceProvider).setActiveVoice(activeVoice);
+    }
     ref.read(ttsServiceProvider).speak(text, startSentenceIndex: startSentenceIndex);
   }
 
   void play() {
     // ignore: avoid_print
     print('>>> [TTS NOTIFIER] play() <<<');
+    final activeVoice = ref.read(voiceManagerProvider).activeVoice;
+    if (activeVoice != null) {
+      ref.read(ttsServiceProvider).setActiveVoice(activeVoice);
+    }
     ref.read(ttsServiceProvider).play();
   }
 
