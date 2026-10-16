@@ -1402,6 +1402,446 @@ void main() {
       expect(find.text('Chapter 1 Page 3 After Image'), findsOneWidget);
       expect(find.textContaining('Chapter 2'), findsNothing);
     });
+
+    testWidgets(
+        'Paginated Mode maintains page index across parent rebuilds and repeatedly uses sentinel when navigating backward',
+        (tester) async {
+      tester.view.physicalSize = const Size(1200, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      // Chapter 1 (index 0): 3 pages
+      const ch0Page0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 0,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Ch1 P1 Text')]),
+        ],
+      );
+      const ch0Page1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 0,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Ch1 P2 Text')]),
+        ],
+      );
+      const ch0Page2 = PageChunk(
+        pageIndexInChapter: 2,
+        chapterIndex: 0,
+        startParagraphIndex: 2,
+        startCharOffset: 0,
+        endParagraphIndex: 2,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Ch1 P3 Text')]),
+        ],
+      );
+
+      // Chapter 2 (index 1): 3 pages
+      const ch1Page0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 1,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Ch2 P1 Text')]),
+        ],
+      );
+      const ch1Page1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 1,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Ch2 P2 Text')]),
+        ],
+      );
+      const ch1Page2 = PageChunk(
+        pageIndexInChapter: 2,
+        chapterIndex: 1,
+        startParagraphIndex: 2,
+        startCharOffset: 0,
+        endParagraphIndex: 2,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Ch2 P3 Text')]),
+        ],
+      );
+
+      // Pre-seed database reading progress at Chapter 2 (index 1), Page 1 (index 0)
+      await db.updateProgress(
+        ReadingProgressesCompanion.insert(
+          documentId: aliceDoc.id,
+          lastReadPageIndex: const Value(1),
+          lastReadSentenceIndex: const Value(0),
+          lastReadScrollOffset: const Value(0.0),
+          currentChapter: const Value('Chapter 2'),
+          updatedAt: DateTime.now(),
+        ),
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterTitleProvider.overrideWith((ref, arg) async {
+            return arg.chapterIndex == 0 ? 'Chapter 1' : 'Chapter 2';
+          }),
+          chapterPagesProvider.overrideWith((ref, arg) async {
+            if (arg.chapterIndex == 0) {
+              return [ch0Page0, ch0Page1, ch0Page2];
+            } else {
+              return [ch1Page0, ch1Page1, ch1Page2];
+            }
+          }),
+          documentChapterNodesProvider.overrideWith((ref, arg) async {
+            if (arg.chapterIndex == 0) {
+              return [
+                ch0Page0.nodes.first,
+                ch0Page1.nodes.first,
+                ch0Page2.nodes.first
+              ];
+            } else {
+              return [
+                ch1Page0.nodes.first,
+                ch1Page1.nodes.first,
+                ch1Page2.nodes.first
+              ];
+            }
+          }),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      final rightArrow = find.byIcon(PhosphorIconsLight.caretRight);
+      final leftArrow = find.byIcon(PhosphorIconsLight.caretLeft);
+
+      // 1. Starts on Chapter 2 Page 1
+      expect(find.text('Page 1 of 3'), findsOneWidget);
+      expect(find.text('Ch2 P1 Text'), findsOneWidget);
+
+      // Advance to Page 2
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 2 of 3'), findsOneWidget);
+      expect(find.text('Ch2 P2 Text'), findsOneWidget);
+
+      // Trigger a parent rebuild (e.g. tap center of screen to toggle chrome)
+      final centerFinder = find.byType(ReaderCanvas);
+      await tester.tap(centerFinder);
+      await tester.pumpAndSettle();
+
+      // Verify that after parent rebuild, we remain on Chapter 2 Page 2
+      expect(find.text('Page 2 of 3'), findsOneWidget);
+      expect(find.text('Ch2 P2 Text'), findsOneWidget);
+
+      // Tap Previous Page (<) -> MUST go to Chapter 2 Page 1, NOT Chapter 1!
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 1 of 3'), findsOneWidget);
+      expect(find.text('Ch2 P1 Text'), findsOneWidget);
+
+      // Tap Previous Page (<) from Page 1 -> Navigate back to Chapter 1, landing on last page (Page 3 of 3)
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 3 of 3'), findsOneWidget);
+      expect(find.text('Ch1 P3 Text'), findsOneWidget);
+
+      // Tap Next Page (>) from Chapter 1 Page 3 -> Should navigate to Chapter 2 Page 1
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 1 of 3'), findsOneWidget);
+      expect(find.text('Ch2 P1 Text'), findsOneWidget);
+
+      // Now navigate backward to Chapter 1 a SECOND time -> MUST land on Page 3 of 3 again!
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 3 of 3'), findsOneWidget);
+      expect(find.text('Ch1 P3 Text'), findsOneWidget);
+    });
+
+    testWidgets(
+        'Entering chapter backward with 25 pages lands on page 25 (index 24) without clamping to 0',
+        (tester) async {
+      tester.view.physicalSize = const Size(1200, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      // Chapter 1 (index 0): 25 pages
+      final ch0Pages = List.generate(
+        25,
+        (i) => PageChunk(
+          pageIndexInChapter: i,
+          chapterIndex: 0,
+          startParagraphIndex: i,
+          startCharOffset: 0,
+          endParagraphIndex: i,
+          endCharOffset: 30,
+          nodes: [
+            ParagraphNode([TextSegment('Chapter 1 Page ${i + 1} Content')]),
+          ],
+        ),
+      );
+
+      // Chapter 2 (index 1): 2 pages
+      final ch1Pages = List.generate(
+        2,
+        (i) => PageChunk(
+          pageIndexInChapter: i,
+          chapterIndex: 1,
+          startParagraphIndex: i,
+          startCharOffset: 0,
+          endParagraphIndex: i,
+          endCharOffset: 30,
+          nodes: [
+            ParagraphNode([TextSegment('Chapter 2 Page ${i + 1} Content')]),
+          ],
+        ),
+      );
+
+      // Start at Chapter 2 Page 1
+      await db.updateProgress(
+        ReadingProgressesCompanion.insert(
+          documentId: aliceDoc.id,
+          lastReadPageIndex: const Value(1),
+          lastReadSentenceIndex: const Value(0),
+          lastReadScrollOffset: const Value(0.0),
+          currentChapter: const Value('Chapter 2'),
+          updatedAt: DateTime.now(),
+        ),
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterTitleProvider.overrideWith((ref, arg) async {
+            return arg.chapterIndex == 0 ? 'Chapter 1' : 'Chapter 2';
+          }),
+          chapterPagesProvider.overrideWith((ref, arg) async {
+            if (arg.chapterIndex == 0) {
+              return ch0Pages;
+            } else {
+              return ch1Pages;
+            }
+          }),
+          documentChapterNodesProvider.overrideWith((ref, arg) async {
+            final pages = arg.chapterIndex == 0 ? ch0Pages : ch1Pages;
+            return pages.map((p) => p.nodes.first).toList();
+          }),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      final leftArrow = find.byIcon(PhosphorIconsLight.caretLeft);
+      final rightArrow = find.byIcon(PhosphorIconsLight.caretRight);
+
+      expect(find.text('Page 1 of 2'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 1 Content'), findsOneWidget);
+
+      // Navigate backward into Chapter 1 (sentinel -1)
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+
+      // Must land on Page 25 of 25 (index 24) and NOT be clamped down to 0
+      expect(find.text('Page 25 of 25'), findsOneWidget);
+      expect(find.text('Chapter 1 Page 25 Content'), findsOneWidget);
+
+      // Tap Previous (<) -> Moves to Page 24 of 25
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 24 of 25'), findsOneWidget);
+      expect(find.text('Chapter 1 Page 24 Content'), findsOneWidget);
+
+      // Tap Next (>) -> Moves back to Page 25 of 25
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 25 of 25'), findsOneWidget);
+      expect(find.text('Chapter 1 Page 25 Content'), findsOneWidget);
+
+      // Tap Next (>) from Page 25 of 25 -> Transitions to Chapter 2 Page 1 of 2
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 1 of 2'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 1 Content'), findsOneWidget);
+    });
+
+    testWidgets(
+        'Paginated Mode allows multi-page intra-chapter turns followed by backward turns without premature chapter jumps',
+        (tester) async {
+      tester.view.physicalSize = const Size(1200, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      // Chapter 1 (index 0): 10 pages
+      final ch0Pages = List.generate(
+        10,
+        (i) => PageChunk(
+          pageIndexInChapter: i,
+          chapterIndex: 0,
+          startParagraphIndex: i,
+          startCharOffset: 0,
+          endParagraphIndex: i,
+          endCharOffset: 30,
+          nodes: [
+            ParagraphNode([TextSegment('Chapter 1 Page ${i + 1} Content')]),
+          ],
+        ),
+      );
+
+      // Chapter 2 (index 1): 10 pages
+      final ch1Pages = List.generate(
+        10,
+        (i) => PageChunk(
+          pageIndexInChapter: i,
+          chapterIndex: 1,
+          startParagraphIndex: i,
+          startCharOffset: 0,
+          endParagraphIndex: i,
+          endCharOffset: 30,
+          nodes: [
+            ParagraphNode([TextSegment('Chapter 2 Page ${i + 1} Content')]),
+          ],
+        ),
+      );
+
+      // Start at Chapter 2 Page 1
+      await db.updateProgress(
+        ReadingProgressesCompanion.insert(
+          documentId: aliceDoc.id,
+          lastReadPageIndex: const Value(1),
+          lastReadSentenceIndex: const Value(0),
+          lastReadScrollOffset: const Value(0.0),
+          currentChapter: const Value('Chapter 2'),
+          updatedAt: DateTime.now(),
+        ),
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterTitleProvider.overrideWith((ref, arg) async {
+            return arg.chapterIndex == 0 ? 'Chapter 1' : 'Chapter 2';
+          }),
+          chapterPagesProvider.overrideWith((ref, arg) async {
+            return arg.chapterIndex == 0 ? ch0Pages : ch1Pages;
+          }),
+          documentChapterNodesProvider.overrideWith((ref, arg) async {
+            final pages = arg.chapterIndex == 0 ? ch0Pages : ch1Pages;
+            return pages.map((p) => p.nodes.first).toList();
+          }),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      final leftArrow = find.byIcon(PhosphorIconsLight.caretLeft);
+      final rightArrow = find.byIcon(PhosphorIconsLight.caretRight);
+
+      expect(find.text('Page 1 of 10'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 1 Content'), findsOneWidget);
+
+      // Advance 4 pages in Chapter 2: Page 1 -> 2 -> 3 -> 4 -> 5
+      for (int step = 2; step <= 5; step++) {
+        await tester.tap(rightArrow);
+        await tester.pumpAndSettle();
+        expect(find.text('Page $step of 10'), findsOneWidget);
+        expect(find.text('Chapter 2 Page $step Content'), findsOneWidget);
+      }
+
+      // Step backward in Chapter 2: Page 5 -> 4
+      // MUST NOT jump to Chapter 1!
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 4 of 10'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 4 Content'), findsOneWidget);
+
+      // Continue stepping backward to Page 1 of Chapter 2
+      for (int step = 3; step >= 1; step--) {
+        await tester.tap(leftArrow);
+        await tester.pumpAndSettle();
+        expect(find.text('Page $step of 10'), findsOneWidget);
+        expect(find.text('Chapter 2 Page $step Content'), findsOneWidget);
+      }
+
+      // Step backward from Chapter 2 Page 1 -> transitions to Chapter 1 Page 10 of 10
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 10 of 10'), findsOneWidget);
+      expect(find.text('Chapter 1 Page 10 Content'), findsOneWidget);
+
+      // Step backward 4 times within Chapter 1 to reach Page 6 of 10
+      for (int step = 9; step >= 6; step--) {
+        await tester.tap(leftArrow);
+        await tester.pumpAndSettle();
+        expect(find.text('Page $step of 10'), findsOneWidget);
+        expect(find.text('Chapter 1 Page $step Content'), findsOneWidget);
+      }
+
+      // From Page 6 of Chapter 1, tap Next (>)
+      // MUST advance to Chapter 1 Page 7 of 10 (NOT jump to Chapter 2 Page 1!)
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 7 of 10'), findsOneWidget);
+      expect(find.text('Chapter 1 Page 7 Content'), findsOneWidget);
+    });
   });
 }
 

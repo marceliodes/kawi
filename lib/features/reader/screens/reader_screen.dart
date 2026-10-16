@@ -107,6 +107,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         // Restore scroll or page position after layout
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
+          final settings = ref.read(readerSettingsProvider);
           if (_isEpub) {
             _canvasKey.currentState?.jumpToPageInChapter(_currentPageIndexInChapter);
           } else if (_pageController.hasClients &&
@@ -114,7 +115,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               _currentPageIndexInChapter > 0) {
             _pageController.jumpToPage(_currentPageIndexInChapter);
           }
-          _canvasKey.currentState?.scrollToPage(_currentPageIndex);
+          if (!settings.isPaginated) {
+            _canvasKey.currentState?.scrollToPage(_currentPageIndex);
+          }
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) _isRestoring = false;
           });
@@ -172,12 +175,17 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   void _onEpubPageChanged(int chapterIndex, int pageIndexInChapter) {
     if (_isRestoring) return;
+    final chapterChanged = _currentChapterIndex != chapterIndex;
     setState(() {
       _currentPageIndex = chapterIndex;
       _currentChapterIndex = chapterIndex;
-      _currentPageIndexInChapter = pageIndexInChapter;
+      if (pageIndexInChapter >= 0) {
+        _currentPageIndexInChapter = pageIndexInChapter;
+      }
     });
-    _resolveChapterTitle(chapterIndex);
+    if (chapterChanged || _currentChapterTitle == null) {
+      _resolveChapterTitle(chapterIndex);
+    }
     _debounceSaveProgress(chapterIndex, 0.0, pageIndexInChapter: pageIndexInChapter);
   }
 
@@ -826,9 +834,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               epubChunks = pagesAsync.asData?.value;
               if (epubChunks != null && epubChunks.isNotEmpty) {
                 _currentChapterPages = epubChunks;
-                if (_currentPageIndexInChapter == -1) {
-                  _currentPageIndexInChapter = epubChunks.length - 1;
-                }
               }
             } else {
               final nodesAsync = ref.watch(
