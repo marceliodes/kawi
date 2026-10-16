@@ -826,6 +826,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               epubChunks = pagesAsync.asData?.value;
               if (epubChunks != null && epubChunks.isNotEmpty) {
                 _currentChapterPages = epubChunks;
+                if (_currentPageIndexInChapter == -1) {
+                  _currentPageIndexInChapter = epubChunks.length - 1;
+                }
               }
             } else {
               final nodesAsync = ref.watch(

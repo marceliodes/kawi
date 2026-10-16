@@ -1,6 +1,6 @@
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:drift/drift.dart' hide Column, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -1211,6 +1211,196 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Page 1 of 1'), findsOneWidget);
       expect(find.text('Chapter 1, Page 0 content here.'), findsOneWidget);
+    });
+
+    testWidgets(
+        'Paginated Mode intra-chapter and cross-chapter page turns synchronize properly with ImageNodes',
+        (tester) async {
+      tester.view.physicalSize = const Size(1200, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      // Chapter 1 (index 0): 3 pages (Page 0: text, Page 1: standalone ImageNode, Page 2: text)
+      const ch0Page0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 0,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 1 Page 1 Text')]),
+        ],
+      );
+      final ch0Page1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 0,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 0,
+        nodes: [
+          ImageNode(_kValid1x1Png, 'Sample image'),
+        ],
+      );
+      const ch0Page2 = PageChunk(
+        pageIndexInChapter: 2,
+        chapterIndex: 0,
+        startParagraphIndex: 2,
+        startCharOffset: 0,
+        endParagraphIndex: 2,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 1 Page 3 After Image')]),
+        ],
+      );
+
+      // Chapter 2 (index 1): 3 pages (Page 0, 1, 2 text)
+      const ch1Page0 = PageChunk(
+        pageIndexInChapter: 0,
+        chapterIndex: 1,
+        startParagraphIndex: 0,
+        startCharOffset: 0,
+        endParagraphIndex: 0,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 2 Page 1 Content')]),
+        ],
+      );
+      const ch1Page1 = PageChunk(
+        pageIndexInChapter: 1,
+        chapterIndex: 1,
+        startParagraphIndex: 1,
+        startCharOffset: 0,
+        endParagraphIndex: 1,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 2 Page 2 Content')]),
+        ],
+      );
+      const ch1Page2 = PageChunk(
+        pageIndexInChapter: 2,
+        chapterIndex: 1,
+        startParagraphIndex: 2,
+        startCharOffset: 0,
+        endParagraphIndex: 2,
+        endCharOffset: 30,
+        nodes: [
+          ParagraphNode([TextSegment('Chapter 2 Page 3 Content')]),
+        ],
+      );
+
+      // Pre-seed database reading progress at Chapter 2 (index 1), Page 1 (index 0)
+      await db.updateProgress(
+        ReadingProgressesCompanion.insert(
+          documentId: aliceDoc.id,
+          lastReadPageIndex: const Value(1),
+          lastReadSentenceIndex: const Value(0),
+          lastReadScrollOffset: const Value(0.0),
+          currentChapter: const Value('Chapter 2'),
+          updatedAt: DateTime.now(),
+        ),
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterTitleProvider.overrideWith((ref, arg) async {
+            return arg.chapterIndex == 0 ? 'Chapter 1' : 'Chapter 2';
+          }),
+          chapterPagesProvider.overrideWith((ref, arg) async {
+            if (arg.chapterIndex == 0) {
+              return [ch0Page0, ch0Page1, ch0Page2];
+            } else {
+              return [ch1Page0, ch1Page1, ch1Page2];
+            }
+          }),
+          documentChapterNodesProvider.overrideWith((ref, arg) async {
+            if (arg.chapterIndex == 0) {
+              return [
+                ch0Page0.nodes.first,
+                ch0Page1.nodes.first,
+                ch0Page2.nodes.first
+              ];
+            } else {
+              return [
+                ch1Page0.nodes.first,
+                ch1Page1.nodes.first,
+                ch1Page2.nodes.first
+              ];
+            }
+          }),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+                contentMaxWidth: 600.0,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      final rightArrow = find.byIcon(PhosphorIconsLight.caretRight);
+      final leftArrow = find.byIcon(PhosphorIconsLight.caretLeft);
+
+      // 1. Verify starts on Chapter 2 Page 1 (index 0)
+      expect(find.text('Page 1 of 3'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 1 Content'), findsOneWidget);
+
+      // Click Next Page once -> Chapter 2 Page 2 (index 1)
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 2 of 3'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 2 Content'), findsOneWidget);
+
+      // Click Next Page second time -> Chapter 2 Page 3 (index 2)
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 3 of 3'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 3 Content'), findsOneWidget);
+
+      // Click Previous Page (<) -> MUST land on Chapter 2 Page 2 (index 1), NOT Chapter 1!
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 2 of 3'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 2 Content'), findsOneWidget);
+      expect(find.textContaining('Chapter 1'), findsNothing);
+
+      // 2. Navigate back to Chapter 2 Page 1 (index 0)
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 1 of 3'), findsOneWidget);
+      expect(find.text('Chapter 2 Page 1 Content'), findsOneWidget);
+
+      // Navigate back from Chapter 2 Page 1 into Chapter 1's last page (Page 3 of 3, index 2)
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 3 of 3'), findsOneWidget);
+      expect(find.text('Chapter 1 Page 3 After Image'), findsOneWidget);
+
+      // Step backward onto Chapter 1 Page 2 (index 1), which is the standalone ImageNode page
+      await tester.tap(leftArrow);
+      await tester.pumpAndSettle();
+      expect(find.byType(Image), findsOneWidget);
+      expect(find.text('Chapter 1 Page 3 After Image'), findsNothing);
+      expect(find.text('Chapter 1 Page 1 Text'), findsNothing);
+
+      // Click Next Page (>) from that image page -> MUST advance to next page of Chapter 1 (Page 3 of 3), NOT Chapter 2!
+      await tester.tap(rightArrow);
+      await tester.pumpAndSettle();
+      expect(find.text('Page 3 of 3'), findsOneWidget);
+      expect(find.text('Chapter 1 Page 3 After Image'), findsOneWidget);
+      expect(find.textContaining('Chapter 2'), findsNothing);
     });
   });
 }
