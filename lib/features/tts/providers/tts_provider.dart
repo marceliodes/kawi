@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/utils/logger.dart';
 import '../models/tts_models.dart';
 import '../services/audio_playback_service.dart';
 import 'voice_manager_provider.dart';
@@ -33,14 +34,12 @@ class TtsStateNotifier extends Notifier<TtsState> {
   }
 
   void loadText(String text, {int startSentenceIndex = 0}) {
-    // ignore: avoid_print
-    print('>>> [TTS NOTIFIER] loadText (${text.length} chars) <<<');
+    AppLogger.d('>>> [TTS NOTIFIER] loadText (${text.length} chars) <<<');
     ref.read(ttsServiceProvider).loadText(text, startSentenceIndex: startSentenceIndex);
   }
 
   void speak(String text, {int startSentenceIndex = 0}) {
-    // ignore: avoid_print
-    print('>>> [TTS NOTIFIER] speak (${text.length} chars) <<<');
+    AppLogger.d('>>> [TTS NOTIFIER] speak (${text.length} chars) <<<');
     final activeVoice = ref.read(voiceManagerProvider).activeVoice;
     if (activeVoice != null) {
       ref.read(ttsServiceProvider).setActiveVoice(activeVoice);
@@ -49,8 +48,7 @@ class TtsStateNotifier extends Notifier<TtsState> {
   }
 
   void play() {
-    // ignore: avoid_print
-    print('>>> [TTS NOTIFIER] play() <<<');
+    AppLogger.d('>>> [TTS NOTIFIER] play() <<<');
     final activeVoice = ref.read(voiceManagerProvider).activeVoice;
     if (activeVoice != null) {
       ref.read(ttsServiceProvider).setActiveVoice(activeVoice);
@@ -59,14 +57,12 @@ class TtsStateNotifier extends Notifier<TtsState> {
   }
 
   void pause() {
-    // ignore: avoid_print
-    print('>>> [TTS NOTIFIER] pause() <<<');
+    AppLogger.d('>>> [TTS NOTIFIER] pause() <<<');
     ref.read(ttsServiceProvider).pause();
   }
 
   void stop() {
-    // ignore: avoid_print
-    print('>>> [TTS NOTIFIER] stop() <<<');
+    AppLogger.d('>>> [TTS NOTIFIER] stop() <<<');
     ref.read(ttsServiceProvider).stop();
   }
 

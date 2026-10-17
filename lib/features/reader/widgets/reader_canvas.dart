@@ -11,6 +11,7 @@ import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
+import '../../../core/utils/logger.dart';
 import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 import '../models/reader_settings.dart';
@@ -2292,7 +2293,7 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
           scrollable.position.minScrollExtent,
           scrollable.position.maxScrollExtent,
         );
-        debugPrint(
+        AppLogger.d(
             '>>> [TTS AUTO-SCROLL] Scrolling to matched node (dy: $sentenceDy -> targetOffset:$targetOffset)');
         widget.onProgrammaticScroll?.call(true);
         scrollable.position.animateTo(

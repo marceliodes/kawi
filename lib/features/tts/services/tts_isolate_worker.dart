@@ -2,6 +2,7 @@ import 'dart:isolate';
 
 import 'package:flutter/services.dart';
 
+import '../../../core/utils/logger.dart';
 import '../models/tts_models.dart';
 import 'tts_engine_bridge.dart';
 import 'tts_text_normalizer.dart';
@@ -69,13 +70,11 @@ class TtsIsolateWorker {
         _configureVoice(voice, initializeImmediately: initializeImmediately);
 
       case LoadTextCommand(:final text, :final startSentenceIndex):
-        // ignore: avoid_print
-        print('[TTS Worker] LoadTextCommand received with ${text.length} chars (startSentenceIndex: $startSentenceIndex)');
+        AppLogger.d('[TTS Worker] LoadTextCommand received with ${text.length} chars (startSentenceIndex: $startSentenceIndex)');
         _loadText(text, startSentenceIndex);
 
       case PlayCommand():
-        // ignore: avoid_print
-        print('[TTS Worker] PlayCommand received (sentences: ${_sentences.length}, currentIndex: $_currentIndex)');
+        AppLogger.d('[TTS Worker] PlayCommand received (sentences: ${_sentences.length}, currentIndex: $_currentIndex)');
         _play();
 
       case PauseCommand():
@@ -138,8 +137,7 @@ class TtsIsolateWorker {
     TtsVoiceModel? voice, {
     bool initializeImmediately = false,
   }) async {
-    // ignore: avoid_print
-    print('>>> [TTS ISOLATE] _configureVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}) <<<');
+    AppLogger.d('>>> [TTS ISOLATE] _configureVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}) <<<');
     if (voice == null) {
       _activeVoiceId = null;
       _activeEngineType = null;
@@ -192,21 +190,16 @@ class TtsIsolateWorker {
     try {
       await _engineBridge?.dispose();
       _engineBridge = createEngineBridge(voice.engineType);
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] Created engine bridge: ${_engineBridge.runtimeType} <<<');
+      AppLogger.d('>>> [TTS ISOLATE] Created engine bridge: ${_engineBridge.runtimeType} <<<');
       await _engineBridge!.initialize(
         voice: voice,
         rootIsolateToken: _rootIsolateToken,
       );
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] Engine bridge initialized successfully <<<');
+      AppLogger.d('>>> [TTS ISOLATE] Engine bridge initialized successfully <<<');
     } catch (e, st) {
       _activeVoiceId = null;
       _activeEngineType = null;
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] Engine bridge initialization FAILED: $e <<<');
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] Stack trace:\n$st <<<');
+      AppLogger.e('>>> [TTS ISOLATE] Engine bridge initialization FAILED: $e <<<', e, st);
     } finally {
       _isConfiguringVoice = false;
     }
@@ -268,8 +261,7 @@ class TtsIsolateWorker {
   Future<void> _play() async {
     _lastWordStart = -1;
     if (_sentences.isEmpty) {
-      // ignore: avoid_print
-      print('[TTS Worker] Play aborted: sentences list is empty.');
+      AppLogger.w('[TTS Worker] Play aborted: sentences list is empty.');
       return;
     }
 
@@ -281,8 +273,7 @@ class TtsIsolateWorker {
     final voiceToUse = _configuredVoice ?? _state.activeVoice;
     // Zero-model safeguard: do not throw or crash if no voice is available
     if (_engineBridge == null && voiceToUse == null) {
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] Play aborted: no engine bridge and no active voice <<<');
+      AppLogger.w('>>> [TTS ISOLATE] Play aborted: no engine bridge and no active voice <<<');
       _toMainPort.send(const TtsErrorEvent('No TTS engine downloaded.'));
       return;
     }
@@ -307,8 +298,7 @@ class TtsIsolateWorker {
       _onUtteranceCompleted(alreadyPlaying: true);
       return;
     }
-    // ignore: avoid_print
-    print('>>> [TTS ISOLATE] Received synthesis command for: "${currentSentence.text}" (engine=${_engineBridge?.runtimeType}, index=${_currentIndex + 1}/${_sentences.length}) <<<');
+    AppLogger.d('>>> [TTS ISOLATE] Received synthesis command for: "${currentSentence.text}" (engine=${_engineBridge?.runtimeType}, index=${_currentIndex + 1}/${_sentences.length}) <<<');
 
     _state = _state.copyWith(
       playbackState: TtsPlaybackState.playing,
@@ -330,8 +320,7 @@ class TtsIsolateWorker {
     if (_prebufferedSentence != null && _prebufferedSentence!.index == _currentIndex) {
       final pre = _prebufferedSentence!;
       _prebufferedSentence = null;
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] Sentence index $_currentIndex was pre-buffered! Dispatching immediately. <<<');
+      AppLogger.d('>>> [TTS ISOLATE] Sentence index $_currentIndex was pre-buffered! Dispatching immediately. <<<');
       _toMainPort.send(
         PlayAudioBytesEvent(
           sentenceIndex: _currentIndex,
@@ -363,8 +352,7 @@ class TtsIsolateWorker {
             );
           },
           onAudioBytes: (wavBytes, durationMs, [words = const []]) {
-            // ignore: avoid_print
-            print('>>> [TTS ISOLATE] onAudioBytes: ${wavBytes.length} bytes, ${durationMs}ms for sentence index $_currentIndex <<<');
+            AppLogger.d('>>> [TTS ISOLATE] onAudioBytes: ${wavBytes.length} bytes, ${durationMs}ms for sentence index $_currentIndex <<<');
             _toMainPort.send(
               PlayAudioBytesEvent(
                 sentenceIndex: _currentIndex,
@@ -379,15 +367,11 @@ class TtsIsolateWorker {
           },
         );
       } catch (e, st) {
-        // ignore: avoid_print
-        print('>>> [TTS ISOLATE] ERROR in _engineBridge.speak(): $e <<<');
-        // ignore: avoid_print
-        print('>>> [TTS ISOLATE] Stack trace:\n$st <<<');
+        AppLogger.e('>>> [TTS ISOLATE] ERROR in _engineBridge.speak(): $e <<<', e, st);
         _toMainPort.send(TtsErrorEvent('TTS synthesis failed: $e'));
       }
     } else {
-      // ignore: avoid_print
-      print('>>> [TTS ISOLATE] _engineBridge is null, no synthesis performed <<<');
+      AppLogger.w('>>> [TTS ISOLATE] _engineBridge is null, no synthesis performed <<<');
     }
   }
 
@@ -403,8 +387,7 @@ class TtsIsolateWorker {
     final currentGen = ++_prebufferGeneration;
     final nextSentence = _sentences[nextIndex];
 
-    // ignore: avoid_print
-    print('>>> [TTS ISOLATE] Lookahead: Pre-buffering sentence [${nextIndex + 1}/${_sentences.length}]: "${nextSentence.text}" <<<');
+    AppLogger.d('>>> [TTS ISOLATE] Lookahead: Pre-buffering sentence [${nextIndex + 1}/${_sentences.length}]: "${nextSentence.text}" <<<');
 
     _engineBridge!.speak(
       nextSentence.text,
@@ -424,13 +407,11 @@ class TtsIsolateWorker {
           words: words,
         );
 
-        // ignore: avoid_print
-        print('>>> [TTS ISOLATE] Lookahead: Pre-buffering COMPLETE for sentence [${nextIndex + 1}/${_sentences.length}] (${wavBytes.length} bytes, ${durationMs}ms) <<<');
+        AppLogger.d('>>> [TTS ISOLATE] Lookahead: Pre-buffering COMPLETE for sentence [${nextIndex + 1}/${_sentences.length}] (${wavBytes.length} bytes, ${durationMs}ms) <<<');
 
         if (_currentIndex == nextIndex) {
           _prebufferedSentence = null;
-          // ignore: avoid_print
-          print('>>> [TTS ISOLATE] In-flight prebuffer caught up with current sentence $nextIndex, dispatching PlayAudioBytesEvent <<<');
+          AppLogger.d('>>> [TTS ISOLATE] In-flight prebuffer caught up with current sentence $nextIndex, dispatching PlayAudioBytesEvent <<<');
           _toMainPort.send(
             PlayAudioBytesEvent(
               sentenceIndex: nextIndex,
@@ -454,10 +435,7 @@ class TtsIsolateWorker {
     ).catchError((e, st) {
       if (_prebufferGeneration == currentGen) {
         _prebufferingIndex = null;
-        // ignore: avoid_print
-        print('>>> [TTS ISOLATE] Lookahead pre-buffering error: $e <<<');
-        // ignore: avoid_print
-        print('>>> [TTS ISOLATE] Stack trace:\n$st <<<');
+        AppLogger.w('>>> [TTS ISOLATE] Lookahead pre-buffering error: $e <<<', e, st);
       }
     });
   }
@@ -537,8 +515,7 @@ class TtsIsolateWorker {
     _lastWordStart = -1;
     if (_currentIndex < _sentences.length - 1) {
       _currentIndex++;
-      // ignore: avoid_print
-      print('[TTS Worker] Utterance completed. Advancing to sentence [${_currentIndex + 1}/${_sentences.length}] (alreadyPlaying: $alreadyPlaying)');
+      AppLogger.d('[TTS Worker] Utterance completed. Advancing to sentence [${_currentIndex + 1}/${_sentences.length}] (alreadyPlaying: $alreadyPlaying)');
 
       _state = _state.copyWith(
         playbackState: TtsPlaybackState.playing,
@@ -566,8 +543,7 @@ class TtsIsolateWorker {
         if (_prebufferedSentence != null && _prebufferedSentence!.index == _currentIndex) {
           final pre = _prebufferedSentence!;
           _prebufferedSentence = null;
-          // ignore: avoid_print
-          print('>>> [TTS ISOLATE] Using pre-buffered audio for sentence index $_currentIndex <<<');
+          AppLogger.d('>>> [TTS ISOLATE] Using pre-buffered audio for sentence index $_currentIndex <<<');
           _toMainPort.send(
             PlayAudioBytesEvent(
               sentenceIndex: _currentIndex,
@@ -578,15 +554,13 @@ class TtsIsolateWorker {
           );
           _triggerPrebuffer();
         } else if (_prebufferingIndex == _currentIndex) {
-          // ignore: avoid_print
-          print('>>> [TTS ISOLATE] Pre-buffering in flight for active sentence $_currentIndex, will dispatch on finish <<<');
+          AppLogger.d('>>> [TTS ISOLATE] Pre-buffering in flight for active sentence $_currentIndex, will dispatch on finish <<<');
         } else {
           _play();
         }
       }
     } else {
-      // ignore: avoid_print
-      print('[TTS Worker] Utterance completed. All ${_sentences.length} sentences finished.');
+      AppLogger.d('[TTS Worker] Utterance completed. All ${_sentences.length} sentences finished.');
       _state = _state.copyWith(
         playbackState: TtsPlaybackState.completed,
         currentWord: '',

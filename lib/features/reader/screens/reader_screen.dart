@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../../../core/database/database_provider.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
+import '../../../core/utils/logger.dart';
 import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 import '../providers/document_content_provider.dart';
@@ -35,7 +37,8 @@ class ReaderScreen extends ConsumerStatefulWidget {
   ConsumerState<ReaderScreen> createState() => _ReaderScreenState();
 }
 
-class _ReaderScreenState extends ConsumerState<ReaderScreen> {
+class _ReaderScreenState extends ConsumerState<ReaderScreen>
+    with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final GlobalKey<ReaderCanvasState> _canvasKey =
       GlobalKey<ReaderCanvasState>();
@@ -69,6 +72,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController = ScrollController();
     _pageController = PageController();
     _itemScrollController = ItemScrollController();
@@ -132,9 +136,16 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   }
 
   @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    await _flushSaveProgress();
+    return AppExitResponse.exit;
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _flushSaveProgress();
     _autoHideTimer?.cancel();
-    _progressSaveDebounce?.cancel();
     _scrollController.dispose();
     _pageController.dispose();
     super.dispose();
@@ -253,23 +264,43 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     } catch (_) {}
   }
 
+  Future<void> _flushSaveProgress({
+    int? pageIndex,
+    double? offset,
+    int? pageIndexInChapter,
+  }) async {
+    _progressSaveDebounce?.cancel();
+    _progressSaveDebounce = null;
+    try {
+      final db = ref.read(databaseProvider);
+      final resolvedPageIndex = pageIndex ?? _currentPageIndex;
+      final resolvedSentenceIndex =
+          pageIndexInChapter ?? _currentPageIndexInChapter;
+      final resolvedOffset = offset ?? _currentScrollOffset;
+
+      await db.updateProgress(
+        ReadingProgressesCompanion.insert(
+          documentId: widget.document.id,
+          lastReadPageIndex: Value(resolvedPageIndex),
+          lastReadSentenceIndex: Value(resolvedSentenceIndex),
+          lastReadScrollOffset: Value(resolvedOffset),
+          currentChapter: Value(_currentChapterTitle),
+          updatedAt: DateTime.now(),
+        ),
+      );
+    } catch (e, st) {
+      AppLogger.w('Failed to flush reading progress: $e', e, st);
+    }
+  }
+
   void _debounceSaveProgress(int pageIndex, double offset, {int? pageIndexInChapter}) {
     _progressSaveDebounce?.cancel();
-    _progressSaveDebounce = Timer(const Duration(milliseconds: 500), () async {
-      try {
-        final db = ref.read(databaseProvider);
-        await db.updateProgress(
-          ReadingProgressesCompanion.insert(
-            documentId: widget.document.id,
-            lastReadPageIndex: Value(pageIndex),
-            lastReadSentenceIndex:
-                Value(pageIndexInChapter ?? _currentPageIndexInChapter),
-            lastReadScrollOffset: Value(offset),
-            currentChapter: Value(_currentChapterTitle),
-            updatedAt: DateTime.now(),
-          ),
-        );
-      } catch (_) {}
+    _progressSaveDebounce = Timer(const Duration(milliseconds: 500), () {
+      _flushSaveProgress(
+        pageIndex: pageIndex,
+        offset: offset,
+        pageIndexInChapter: pageIndexInChapter,
+      );
     });
   }
 
@@ -328,13 +359,11 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           _canvasKey.currentState?.getFirstVisibleTextSnippet();
       if (visibleSnippet != null && visibleSnippet.trim().isNotEmpty) {
         fromSentence = visibleSnippet.trim();
-        // ignore: avoid_print
-        print('>>> [TTS UI] _startTts resolved visible snippet: "$fromSentence" <<<');
+        AppLogger.d('>>> [TTS UI] _startTts resolved visible snippet: "$fromSentence" <<<');
       }
     }
 
-    // ignore: avoid_print
-    print('>>> [TTS UI] _startTts called (fromSentence: ${fromSentence != null}) <<<');
+    AppLogger.d('>>> [TTS UI] _startTts called (fromSentence: ${fromSentence != null}) <<<');
     setState(() {
       _isUserDesyncedFromTts = false;
     });
@@ -508,8 +537,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
           if (matchStart != -1 && matchStart < textToRead.length) {
             textToRead = textToRead.substring(matchStart).trim();
-            // ignore: avoid_print
-            print(
+            AppLogger.d(
                 '>>> [TTS UI] _startTts sliced textToRead to ${textToRead.length} chars (starts with: "${textToRead.substring(0, textToRead.length.clamp(0, 50))}") <<<');
           }
         } else if (!settings.isPaginated) {
@@ -556,8 +584,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           _isTtsBarVisible = true;
         });
 
-        // ignore: avoid_print
-        print('>>> [TTS UI] calling ttsNotifier.speak() with ${textToRead.length} chars (EPUB chapter $_currentPageIndex) <<<');
+        AppLogger.d('>>> [TTS UI] calling ttsNotifier.speak() with ${textToRead.length} chars (EPUB chapter $_currentPageIndex) <<<');
         ttsNotifier.speak(textToRead);
         return;
       }
@@ -721,17 +748,15 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         _isTtsBarVisible = true;
       });
 
-      // ignore: avoid_print
-      print('>>> [TTS UI] calling ttsNotifier.speak() with ${textToRead.length} chars <<<');
+      AppLogger.d('>>> [TTS UI] calling ttsNotifier.speak() with ${textToRead.length} chars <<<');
       ttsNotifier.speak(textToRead);
-    } catch (e) {
-      debugPrint('Error starting TTS: $e');
+    } catch (e, st) {
+      AppLogger.e('Error starting TTS: $e', e, st);
     }
   }
 
   void _toggleTts() {
-    // ignore: avoid_print
-    print('>>> [TTS UI] _toggleTts called <<<');
+    AppLogger.d('>>> [TTS UI] _toggleTts called <<<');
     final hasInstalledModels = ref.read(hasInstalledTtsModelsProvider);
     if (!hasInstalledModels) {
       ScaffoldMessenger.of(context).showSnackBar(

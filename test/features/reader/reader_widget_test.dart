@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:drift/drift.dart' hide isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -501,6 +503,36 @@ void main() {
 
       checkSpan(selectableTexts.first.textSpan!);
       expect(headingHighlighted, isTrue);
+    },
+  );
+
+  testWidgets(
+    'ReaderScreen flushes reading progress on didRequestAppExit and unmount',
+    (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          documentTocProvider(testDoc.filePath)
+              .overrideWith((ref) => Future.value(sampleToc)),
+          documentPageContentProvider.overrideWith(
+            (ref, arg) => Future.value(mockPageContent(arg.pageIndex)),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _createReaderTestApp(container: container, document: testDoc),
+      );
+      await tester.pumpAndSettle();
+
+      final state = tester.state(find.byType(ReaderScreen)) as WidgetsBindingObserver;
+      final exitResponse = await state.didRequestAppExit();
+      expect(exitResponse, equals(AppExitResponse.exit));
+
+      final progress = await db.getProgressForDocument(testDoc.id);
+      expect(progress, isNotNull);
+      expect(progress!.documentId, equals(testDoc.id));
     },
   );
 }

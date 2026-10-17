@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:piper_tts/piper_tts.dart';
 
+import '../../../core/utils/logger.dart';
 import '../../../core/utils/wav_encoder.dart';
 import '../models/tts_models.dart';
 import 'tts_text_normalizer.dart';
@@ -115,10 +116,9 @@ class KokoroEngineBridge implements TtsEngineBridge {
         rootIsolateToken: rootIsolateToken,
       );
       _initialized = _fallbackPiperBridge!.isInitialized;
-      // ignore: avoid_print
-      print('>>> [KOKORO BRIDGE] Successfully initialized Piper fallback engine bridge <<<');
-    } catch (piperErr) {
-      debugPrint('[KokoroEngineBridge] Piper fallback initialization failed: $piperErr');
+      AppLogger.d('>>> [KOKORO BRIDGE] Successfully initialized Piper fallback engine bridge <<<');
+    } catch (piperErr, st) {
+      AppLogger.e('[KokoroEngineBridge] Piper fallback initialization failed: $piperErr', piperErr, st);
       _initialized = false;
     }
   }
@@ -172,15 +172,13 @@ class KokoroEngineBridge implements TtsEngineBridge {
     try {
       if (_kokoro == null) {
         _kokoro = KokoroTts();
-        // ignore: avoid_print
-        print('>>> [KOKORO BRIDGE] Initializing persistent ONNX session (style: $_voiceStyle, model: $_resolvedModelPath)... <<<');
+        AppLogger.d('>>> [KOKORO BRIDGE] Initializing persistent ONNX session (style: $_voiceStyle, model: $_resolvedModelPath)... <<<');
         await _kokoro!.initialize();
-        // ignore: avoid_print
-        print('>>> [KOKORO BRIDGE] Persistent ONNX session initialized successfully <<<');
+        AppLogger.d('>>> [KOKORO BRIDGE] Persistent ONNX session initialized successfully <<<');
       }
       _initialized = true;
-    } catch (e) {
-      debugPrint('[KokoroEngineBridge] Initialization failed ($e). Falling back to Piper.');
+    } catch (e, st) {
+      AppLogger.w('[KokoroEngineBridge] Initialization failed ($e). Falling back to Piper.', e, st);
       isKokoroSupported = false;
       _kokoro = null;
       await _initializePiperFallback(voice, rootIsolateToken);
@@ -209,8 +207,7 @@ class KokoroEngineBridge implements TtsEngineBridge {
       );
     }
 
-    // ignore: avoid_print
-    print('>>> [KOKORO BRIDGE] speak() called with: "$text" (rate=$rate, modelPath=$_resolvedModelPath) <<<');
+    AppLogger.d('>>> [KOKORO BRIDGE] speak() called with: "$text" (rate=$rate, modelPath=$_resolvedModelPath) <<<');
     await stop();
     _isSpeaking = true;
     _isPaused = false;
@@ -243,13 +240,12 @@ class KokoroEngineBridge implements TtsEngineBridge {
           speed: rate,
         );
         final durationMs = (pcm.length / sampleRate * 1000).round();
-        // ignore: avoid_print
-        print('[TTS Worker] Kokoro finished inference: ${pcm.length} samples (${durationMs}ms) for sentence: "$text"');
+        AppLogger.d('[TTS Worker] Kokoro finished inference: ${pcm.length} samples (${durationMs}ms) for sentence: "$text"');
         if (pcm.isNotEmpty) {
           onAudioBuffer?.call(pcm.toList(), sampleRate);
         }
-      } catch (e) {
-        debugPrint('[KokoroEngineBridge] Synthesis failed ($e). Falling back to Piper.');
+      } catch (e, st) {
+        AppLogger.w('[KokoroEngineBridge] Synthesis failed ($e). Falling back to Piper.', e, st);
         isKokoroSupported = false;
         _kokoro = null;
         _fallbackPiperBridge = PiperEngineBridge();
@@ -306,12 +302,10 @@ class KokoroEngineBridge implements TtsEngineBridge {
   }) async {
     if (_kokoro == null) {
       _kokoro = KokoroTts();
-      // ignore: avoid_print
-      print('>>> [KOKORO BRIDGE] Creating initial ONNX session... <<<');
+      AppLogger.d('>>> [KOKORO BRIDGE] Creating initial ONNX session... <<<');
       await _kokoro!.initialize();
     } else {
-      // ignore: avoid_print
-      print('>>> [KOKORO BRIDGE] Reusing existing persistent ONNX session for synthesis (no reload) <<<');
+      AppLogger.d('>>> [KOKORO BRIDGE] Reusing existing persistent ONNX session for synthesis (no reload) <<<');
     }
     return await _kokoro!.generate(text, voice: voiceStyle, speed: speed);
   }
@@ -415,11 +409,9 @@ class PiperEngineBridge implements TtsEngineBridge {
           if (onnx.existsSync()) {
             try {
               DynamicLibrary.open(onnx.path);
-              // ignore: avoid_print
-              print('>>> [PIPER BRIDGE] Pre-loaded onnxruntime from: ${onnx.path} <<<');
-            } catch (e) {
-              // ignore: avoid_print
-              print('>>> [PIPER BRIDGE] Note on loading ${onnx.path}: $e <<<');
+              AppLogger.d('>>> [PIPER BRIDGE] Pre-loaded onnxruntime from: ${onnx.path} <<<');
+            } catch (e, st) {
+              AppLogger.w('>>> [PIPER BRIDGE] Note on loading ${onnx.path}: $e <<<', e, st);
             }
           }
 
@@ -427,19 +419,16 @@ class PiperEngineBridge implements TtsEngineBridge {
           if (piper.existsSync()) {
             try {
               DynamicLibrary.open(piper.path);
-              // ignore: avoid_print
-              print('>>> [PIPER BRIDGE] Pre-loaded piper from: ${piper.path} <<<');
-            } catch (e) {
-              // ignore: avoid_print
-              print('>>> [PIPER BRIDGE] Note on loading ${piper.path}: $e <<<');
+              AppLogger.d('>>> [PIPER BRIDGE] Pre-loaded piper from: ${piper.path} <<<');
+            } catch (e, st) {
+              AppLogger.w('>>> [PIPER BRIDGE] Note on loading ${piper.path}: $e <<<', e, st);
             }
           }
         }
       }
       _nativeLibsLoaded = true;
-    } catch (e) {
-      // ignore: avoid_print
-      print('>>> [PIPER BRIDGE] Error during native library pre-loading: $e <<<');
+    } catch (e, st) {
+      AppLogger.e('>>> [PIPER BRIDGE] Error during native library pre-loading: $e <<<', e, st);
     }
   }
 
@@ -458,15 +447,12 @@ class PiperEngineBridge implements TtsEngineBridge {
           File(_resolvedModelPath!).existsSync()) {
         Piper.modelPath = _resolvedModelPath!;
         Piper.initModel(_resolvedModelPath!);
-        // ignore: avoid_print
-        print('>>> [PIPER BRIDGE] Persistent Piper session loaded in memory for: $_resolvedModelPath <<<');
+        AppLogger.d('>>> [PIPER BRIDGE] Persistent Piper session loaded in memory for: $_resolvedModelPath <<<');
       }
-      // ignore: avoid_print
-      print('>>> [PIPER BRIDGE] initialize() for voice: ${voice.name} (id: ${voice.id}), resolvedPath: $_resolvedModelPath (exists: ${_resolvedModelPath != null && File(_resolvedModelPath!).existsSync()}) <<<');
+      AppLogger.d('>>> [PIPER BRIDGE] initialize() for voice: ${voice.name} (id: ${voice.id}), resolvedPath: $_resolvedModelPath (exists: ${_resolvedModelPath != null && File(_resolvedModelPath!).existsSync()}) <<<');
       _initialized = true;
     } catch (e, st) {
-      // ignore: avoid_print
-      print('>>> [PIPER BRIDGE] Native initialization error: $e\n$st <<<');
+      AppLogger.e('>>> [PIPER BRIDGE] Native initialization error: $e\n$st <<<', e, st);
       rethrow;
     }
   }
@@ -491,8 +477,7 @@ class PiperEngineBridge implements TtsEngineBridge {
       _resolvedModelPath = modelPath;
       Piper.modelPath = modelPath;
     }
-    // ignore: avoid_print
-    print('>>> [PIPER BRIDGE] speak() called with text: "$text", model: "$modelPath" <<<');
+    AppLogger.d('>>> [PIPER BRIDGE] speak() called with text: "$text", model: "$modelPath" <<<');
 
     var cleaned = TtsTextNormalizer.filterPlaceholdersAndTags(text);
     cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -511,11 +496,9 @@ class PiperEngineBridge implements TtsEngineBridge {
     if (modelPath != null && File(modelPath).existsSync()) {
       try {
         Piper.modelPath = modelPath;
-        // ignore: avoid_print
-        print('>>> [PIPER BRIDGE] Starting Piper speech generation with in-memory model session: $modelPath <<<');
+        AppLogger.d('>>> [PIPER BRIDGE] Starting Piper speech generation with in-memory model session: $modelPath <<<');
         final file = await Piper.generateSpeech(normalizedText);
-        // ignore: avoid_print
-        print('>>> [PIPER BRIDGE] Piper generateSpeech returned file: ${file.path} (exists: ${file.existsSync()}) <<<');
+        AppLogger.d('>>> [PIPER BRIDGE] Piper generateSpeech returned file: ${file.path} (exists: ${file.existsSync()}) <<<');
         if (file.existsSync() && _isSpeaking) {
           final bytes = await file.readAsBytes();
           if (bytes.length > 44) {
@@ -528,25 +511,22 @@ class PiperEngineBridge implements TtsEngineBridge {
             onAudioBuffer?.call(samples, 22050);
 
             final durationMs = ((pcm.length / (22050 * 2)) * 1000).round();
-            // ignore: avoid_print
-            print('>>> [PIPER BRIDGE] Piper finished synthesis: ${bytes.length} bytes (${durationMs}ms) for sentence: "$text" <<<');
+            AppLogger.d('>>> [PIPER BRIDGE] Piper finished synthesis: ${bytes.length} bytes (${durationMs}ms) for sentence: "$text" <<<');
             final timedWords = _computeTimedWords(words, durationMs);
             onAudioBytes?.call(Uint8List.fromList(bytes), durationMs, timedWords);
             return;
           }
         }
       } catch (e, st) {
-        // ignore: avoid_print
-        print('>>> [PIPER BRIDGE] ERROR in Piper synthesis: $e\n$st <<<');
+        AppLogger.e('>>> [PIPER BRIDGE] ERROR in Piper synthesis: $e\n$st <<<', e, st);
       }
     } else {
-      // ignore: avoid_print
-      print('>>> [PIPER BRIDGE] Piper model file not found at: $modelPath <<<');
+      AppLogger.w('>>> [PIPER BRIDGE] Piper model file not found at: $modelPath <<<');
     }
 
     // If no audio was generated, do not advance sentences on a fallback timer
     _isSpeaking = false;
-    debugPrint('[PiperEngineBridge] Piper generation produced no audio.');
+    AppLogger.w('[PiperEngineBridge] Piper generation produced no audio.');
   }
 
   @override

@@ -5,6 +5,7 @@ import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
+import '../../../core/utils/logger.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/providers/voice_manager_provider.dart';
 import '../../tts/screens/voice_manager_screen.dart';
@@ -98,10 +99,8 @@ class TtsControlBar extends ConsumerWidget {
                       : theme.textPrimary,
                 ),
                 onPressed: () {
-                  // ignore: avoid_print
-                  print('>>> [ACTIVE UI BAR] Clicked play button on screen <<<');
-                  // ignore: avoid_print
-                  print('>>> [TTS UI] PLAY BUTTON PRESSED (isPlaying=$isPlaying, hasSentences=$hasSentences, onPlay=${onPlay != null}) <<<');
+                  AppLogger.d('>>> [ACTIVE UI BAR] Clicked play button on screen <<<');
+                  AppLogger.d('>>> [TTS UI] PLAY BUTTON PRESSED (isPlaying=$isPlaying, hasSentences=$hasSentences, onPlay=${onPlay != null}) <<<');
                   if (!hasInstalledModels) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(

@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/tts_models.dart';
+import '../../../core/utils/logger.dart';
 import 'tts_isolate_worker.dart';
 import 'tts_text_normalizer.dart';
 
@@ -184,15 +185,14 @@ class AudioPlaybackService {
   }
 
   void _handlePrebufferedAudio(PrebufferedAudioBytesEvent message) {
-    // ignore: avoid_print
-    print('>>> [Kawi TTS] Received prebuffered audio for sentence index ${message.sentenceIndex} (${message.wavBytes.length} bytes) <<<');
+    AppLogger.d('>>> [Kawi TTS] Received prebuffered audio for sentence index ${message.sentenceIndex} (${message.wavBytes.length} bytes) <<<');
     final fileFuture = () async {
       try {
         final tempFile = await _getTempWavFile(message.sentenceIndex);
         await tempFile.writeAsBytes(message.wavBytes, flush: true);
         return tempFile.path;
-      } catch (e) {
-        debugPrint('[AudioPlaybackService] Error caching prebuffered audio: $e');
+      } catch (e, st) {
+        AppLogger.e('[AudioPlaybackService] Error caching prebuffered audio: $e', e, st);
         rethrow;
       }
     }();
@@ -216,11 +216,10 @@ class AudioPlaybackService {
     List<SentenceWord> words = const [],
   }) async {
     final currentIndex = sentenceIndex;
-    // ignore: avoid_print
-    print('[Kawi TTS] Received ${wavBytes.length} bytes for sentence index $currentIndex');
+    AppLogger.d('[Kawi TTS] Received ${wavBytes.length} bytes for sentence index $currentIndex');
 
     if (wavBytes.isEmpty) {
-      debugPrint('[Kawi TTS] Error: audio bytes are empty for sentence index $currentIndex');
+      AppLogger.e('[Kawi TTS] Error: audio bytes are empty for sentence index $currentIndex');
       _isAudioPlaying = false;
       stop();
       return;
@@ -237,8 +236,8 @@ class AudioPlaybackService {
       final tempFile = await _getTempWavFile(currentIndex);
       await tempFile.writeAsBytes(wavBytes, flush: true);
       await _audioPlayer.play(DeviceFileSource(tempFile.path));
-    } catch (e) {
-      debugPrint('[AudioPlaybackService] AudioPlayer.play: $e');
+    } catch (e, st) {
+      AppLogger.e('[AudioPlaybackService] AudioPlayer.play: $e', e, st);
       _isAudioPlaying = false;
       stop();
     }
@@ -268,8 +267,7 @@ class AudioPlaybackService {
     if (_prebufferedAudio != null && _prebufferedAudio!.sentenceIndex == nextIndex) {
       final pre = _prebufferedAudio!;
       _prebufferedAudio = null;
-      // ignore: avoid_print
-      print('>>> [Kawi TTS] Instant zero-gap transition to pre-buffered sentence index $nextIndex <<<');
+      AppLogger.d('>>> [Kawi TTS] Instant zero-gap transition to pre-buffered sentence index $nextIndex <<<');
 
       _isAudioPlaying = true;
       _setActiveSentence(pre.sentenceIndex);
@@ -278,8 +276,8 @@ class AudioPlaybackService {
         final filePath = await pre.filePathFuture;
         if (!_isAudioPlaying) return;
         await _audioPlayer.play(DeviceFileSource(filePath));
-      } catch (e) {
-        debugPrint('[AudioPlaybackService] AudioPlayer.play prebuffered: $e');
+      } catch (e, st) {
+        AppLogger.e('[AudioPlaybackService] AudioPlayer.play prebuffered: $e', e, st);
         _isAudioPlaying = false;
         stop();
         return;
@@ -294,8 +292,7 @@ class AudioPlaybackService {
 
   /// Sets the active voice model and informs the isolate.
   void setActiveVoice(TtsVoiceModel? voice, {bool initializeImmediately = false}) {
-    // ignore: avoid_print
-    print('>>> [Kawi TTS] setActiveVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}, installed: ${voice?.isInstalled}, initImmediately: $initializeImmediately) <<<');
+    AppLogger.d('>>> [Kawi TTS] setActiveVoice called (voice: ${voice?.name}, engine: ${voice?.engineType}, installed: ${voice?.isInstalled}, initImmediately: $initializeImmediately) <<<');
     _activeVoice = voice;
     stateNotifier.value = stateNotifier.value.copyWith(
       activeVoice: voice,
@@ -315,8 +312,7 @@ class AudioPlaybackService {
   void loadText(String text, {int startSentenceIndex = 0}) {
     _prebufferedAudio = null;
     final normalized = TtsTextNormalizer.normalizeParagraphWhitespace(text);
-    // ignore: avoid_print
-    print('[Kawi TTS] loadText called with ${normalized.length} chars (startSentenceIndex: $startSentenceIndex)');
+    AppLogger.d('[Kawi TTS] loadText called with ${normalized.length} chars (startSentenceIndex: $startSentenceIndex)');
     _sendCommand(
       LoadTextCommand(normalized, startSentenceIndex: startSentenceIndex),
     );
@@ -334,10 +330,9 @@ class AudioPlaybackService {
   /// this is a safe no-op that updates the error message without crashing.
   void play() {
     initialize();
-    // ignore: avoid_print
-    print('[Kawi TTS] play called (hasVoice: ${_activeVoice != null}, isPaused: ${currentState.isPaused})');
+    AppLogger.d('[Kawi TTS] play called (hasVoice: ${_activeVoice != null}, isPaused: ${currentState.isPaused})');
     if (_activeVoice == null && !currentState.hasInstalledModels) {
-      debugPrint('[AudioPlaybackService] Play aborted: No TTS engine downloaded.');
+      AppLogger.w('[AudioPlaybackService] Play aborted: No TTS engine downloaded.');
       stateNotifier.value = stateNotifier.value.copyWith(
         errorMessage: 'No TTS engine downloaded.',
         playbackState: TtsPlaybackState.stopped,

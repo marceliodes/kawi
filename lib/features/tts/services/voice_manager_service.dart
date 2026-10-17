@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../../../core/utils/logger.dart';
 import '../models/tts_models.dart';
 import 'tts_engine_bridge.dart';
 
@@ -248,8 +249,7 @@ class VoiceManagerService {
       final configResp = await http.get(Uri.parse(configUrl));
       if (configResp.statusCode == 200 && configResp.bodyBytes.isNotEmpty) {
         await configFile.writeAsBytes(configResp.bodyBytes, flush: true);
-        // ignore: avoid_print
-        print('>>> [VOICE MANAGER] Saved Piper config: ${configFile.path} (${configResp.bodyBytes.length} bytes) <<<');
+        AppLogger.i('>>> [VOICE MANAGER] Saved Piper config: ${configFile.path} (${configResp.bodyBytes.length} bytes) <<<');
       } else {
         throw StateError('Failed to download Piper phoneme config (.json): HTTP ${configResp.statusCode}');
       }
@@ -263,8 +263,7 @@ class VoiceManagerService {
         throw StateError('Piper voice files validation failed after download.');
       }
 
-      // ignore: avoid_print
-      print('>>> [VOICE MANAGER] Piper model & config successfully verified: ${targetFile.path} (${targetFile.lengthSync()} bytes), ${configFile.path} (${configFile.lengthSync()} bytes) <<<');
+      AppLogger.i('>>> [VOICE MANAGER] Piper model & config successfully verified: ${targetFile.path} (${targetFile.lengthSync()} bytes), ${configFile.path} (${configFile.lengthSync()} bytes) <<<');
 
       onProgress?.call(1.0, 'Download complete');
     } catch (e) {

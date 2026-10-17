@@ -5,6 +5,7 @@ import 'package:epubx/epubx.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
+import '../../../core/utils/logger.dart';
 import '../models/document_models.dart';
 import 'document_extractor.dart';
 import 'document_service.dart';
@@ -144,7 +145,7 @@ class EpubService implements DocumentService {
       _bookCache.put(filePath, book);
 
       sw.stop();
-      debugPrint('>>> [EPUB OPEN] Loaded initial chapter in ${sw.elapsedMilliseconds}ms');
+      AppLogger.i('>>> [EPUB OPEN] Loaded initial chapter in ${sw.elapsedMilliseconds}ms');
       return book;
     } finally {
       _openingFutures.remove(filePath);
