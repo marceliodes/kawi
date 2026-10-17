@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kawi/features/reader/constants/reader_layout_constants.dart';
 import 'package:kawi/features/reader/models/document_models.dart';
 import 'package:kawi/features/reader/providers/document_content_provider.dart';
 import 'package:kawi/features/reader/services/chapter_paginator.dart';
@@ -315,6 +316,283 @@ void main() {
 
       final resolvedPage = notifier.resolvePageForCurrentAnchor(dummyPages);
       expect(resolvedPage, 1);
+    });
+  });
+
+  group('ChapterPaginator: Strict Whole-Line Slicing & Height Invariants', () {
+    test(
+        'rendered content height of every PageChunk is strictly <= maxHeight across multiple configurations',
+        () {
+      final sampleParagraphs = [
+        for (var i = 0; i < 8; i++)
+          ParagraphNode([
+            TextSegment(
+              'Paragraph $i: ${List.generate(
+                15,
+                (w) =>
+                    'word$w${w % 5 == 0 ? ", punctuation" : ""} in a long narrative context',
+              ).join(' ')}.',
+            ),
+          ]),
+      ];
+
+      final testHeights = [200.0, 350.0, 500.0, 720.0];
+      final fontSizes = [14.0, 18.0, 24.0];
+
+      for (final h in testHeights) {
+        for (final fs in fontSizes) {
+          final style = TextStyle(fontSize: fs, height: 1.5);
+          final pages = ChapterPaginator.paginate(
+            nodes: sampleParagraphs,
+            maxWidth: 400.0,
+            maxHeight: h,
+            textStyle: style,
+            paragraphSpacing: 16.0,
+          );
+
+          expect(pages, isNotEmpty);
+
+          for (var p = 0; p < pages.length; p++) {
+            final chunk = pages[p];
+            var totalHeight = 0.0;
+
+            for (final node in chunk.nodes) {
+              final segments = node is ParagraphNode
+                  ? node.segments
+                  : (node as HeadingNode).segments;
+              final span = TextSpan(
+                style: style,
+                children: [
+                  for (final s in segments)
+                    TextSpan(
+                      text: s.text,
+                      style: TextStyle(
+                        fontWeight: s.isBold ? FontWeight.bold : null,
+                        fontStyle: s.isItalic ? FontStyle.italic : null,
+                      ),
+                    ),
+                ],
+              );
+              final painter = TextPainter(
+                text: span,
+                textDirection: TextDirection.ltr,
+              )..layout(maxWidth: 400.0);
+
+              totalHeight += painter.height + 16.0;
+            }
+
+            expect(
+              totalHeight,
+              lessThanOrEqualTo(h),
+              reason:
+                  'Page $p with maxHeight=$h, fontSize=$fs exceeded budget (was $totalHeight)',
+            );
+          }
+        }
+      }
+    });
+
+    test(
+        'splits a paragraph cleanly across page boundaries when space allows >= 2 lines',
+        () {
+      final nodes = [
+        const ParagraphNode([
+          TextSegment('Short intro paragraph that takes about 1 or 2 lines.'),
+        ]),
+        ParagraphNode([
+          TextSegment(
+            List.generate(
+              30,
+              (i) =>
+                  'sentence$i with substantial length to wrap across many lines.',
+            ).join(' '),
+          ),
+        ]),
+      ];
+
+      final pages = ChapterPaginator.paginate(
+        nodes: nodes,
+        maxWidth: 350.0,
+        maxHeight: 250.0,
+        textStyle: const TextStyle(fontSize: 16.0, height: 1.5),
+        paragraphSpacing: 16.0,
+      );
+
+      // Verify that page 0 has more than 1 node (first paragraph + part of second paragraph)
+      expect(pages.length, greaterThanOrEqualTo(2));
+      expect(pages[0].nodes.length, 2);
+
+      // Verify that page 0 does not exceed maxHeight
+      var page0Height = 0.0;
+      for (final node in pages[0].nodes) {
+        final segments = (node as ParagraphNode).segments;
+        final span = TextSpan(
+          style: const TextStyle(fontSize: 16.0, height: 1.5),
+          children: [for (final s in segments) TextSpan(text: s.text)],
+        );
+        final painter = TextPainter(
+          text: span,
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: 350.0);
+        page0Height += painter.height + 16.0;
+      }
+      expect(page0Height, lessThanOrEqualTo(250.0));
+    });
+
+    test(
+        'handles extreme small maxHeight without crashing or infinite loops',
+        () {
+      final nodes = [
+        const ParagraphNode([TextSegment('Test with very tiny height.')]),
+      ];
+
+      final pages = ChapterPaginator.paginate(
+        nodes: nodes,
+        maxWidth: 300.0,
+        maxHeight: 30.0,
+        textStyle: const TextStyle(fontSize: 16.0, height: 1.5),
+        paragraphSpacing: 16.0,
+      );
+
+      expect(pages, isNotEmpty);
+      expect(pages.first.nodes, isNotEmpty);
+    });
+
+    test(
+        'maximized viewport (maxHeight=1200) packs multiple paragraphs and heading strictly within height budget',
+        () {
+      const maxWidth = 600.0;
+      const maxHeight = 1200.0;
+      const textStyle = TextStyle(fontSize: 18.0, height: 1.5);
+      const paragraphSpacing = 16.0;
+
+      final nodes = <DocumentNode>[
+        const HeadingNode(1, [TextSegment('Chapter 1: The Maximized Viewport')]),
+        for (var i = 1; i <= 12; i++)
+          ParagraphNode([
+            TextSegment(
+              'Paragraph $i: This is a realistic body paragraph with several lines of prose '
+              'describing the scenery, actions, and internal thoughts of the protagonist. '
+              'It continues on to ensure multiple wrapping lines per paragraph in order to test '
+              'the cumulative height metrics and ensure no line slicing occurs on tall viewports.',
+            ),
+          ]),
+      ];
+
+      final pages = ChapterPaginator.paginate(
+        nodes: nodes,
+        maxWidth: maxWidth,
+        maxHeight: maxHeight,
+        textStyle: textStyle,
+        paragraphSpacing: paragraphSpacing,
+      );
+
+      expect(pages, isNotEmpty);
+
+      for (var p = 0; p < pages.length; p++) {
+        final page = pages[p];
+        var totalHeight = 0.0;
+
+        for (final node in page.nodes) {
+          TextStyle nodeStyle = textStyle;
+          List<TextSegment> segments;
+          if (node is HeadingNode) {
+            final scale = (1.6 - node.level * 0.1).clamp(1.1, 1.8);
+            nodeStyle = textStyle.copyWith(
+              fontSize: (textStyle.fontSize ?? 16.0) * scale,
+              fontWeight: FontWeight.bold,
+              height: 1.3,
+            );
+            segments = node.segments;
+          } else if (node is ParagraphNode) {
+            segments = node.segments;
+          } else {
+            continue;
+          }
+
+          final span = TextSpan(
+            style: nodeStyle,
+            children: [
+              for (final s in segments)
+                TextSpan(
+                  text: s.text,
+                  style: TextStyle(
+                    fontWeight: s.isBold ? FontWeight.bold : null,
+                    fontStyle: s.isItalic ? FontStyle.italic : null,
+                  ),
+                ),
+            ],
+          );
+
+          final painter = TextPainter(
+            text: span,
+            textDirection: TextDirection.ltr,
+          )..layout(maxWidth: maxWidth);
+
+          totalHeight += painter.height + paragraphSpacing;
+        }
+
+        expect(
+          totalHeight,
+          lessThanOrEqualTo(maxHeight),
+          reason:
+              'Page $p exceeded maxHeight budget of $maxHeight (measured $totalHeight)',
+        );
+      }
+    });
+
+    test(
+        'nodeHeadroomSlack pushes marginal paragraph to next page when space leaves less than nodeHeadroomSlack',
+        () {
+      const maxWidth = 500.0;
+      const textStyle = TextStyle(fontSize: 16.0, height: 1.5);
+      const paragraphSpacing = 16.0;
+
+      const testText = 'Line one of paragraph.\nLine two of paragraph.';
+      const testParagraph = ParagraphNode([
+        TextSegment(testText),
+      ]);
+      final painter = TextPainter(
+        text: const TextSpan(
+          text: testText,
+          style: textStyle,
+        ),
+        textDirection: TextDirection.ltr,
+        strutStyle: EpubPaginationMetrics.strutStyleFor(textStyle),
+      )..layout(maxWidth: maxWidth);
+      expect(painter.computeLineMetrics().length, 2);
+      final pHeight = painter.height + paragraphSpacing;
+
+      const leadText = 'Lead paragraph occupying a known height.';
+      const leadNode = ParagraphNode([
+        TextSegment(leadText),
+      ]);
+      final leadPainter = TextPainter(
+        text: const TextSpan(
+          text: leadText,
+          style: textStyle,
+        ),
+        textDirection: TextDirection.ltr,
+        strutStyle: EpubPaginationMetrics.strutStyleFor(textStyle),
+      )..layout(maxWidth: maxWidth);
+      final leadHeight = leadPainter.height + paragraphSpacing;
+
+      // Set maxHeight such that leadNode + testParagraph fits in raw height (leadHeight + pHeight + 2.0),
+      // but NOT with nodeHeadroomSlack (leadHeight + pHeight + nodeHeadroomSlack > maxHeight)
+      final maxHeight = leadHeight + pHeight + 2.0;
+
+      final pages = ChapterPaginator.paginate(
+        nodes: [leadNode, testParagraph],
+        maxWidth: maxWidth,
+        maxHeight: maxHeight,
+        textStyle: textStyle,
+        paragraphSpacing: paragraphSpacing,
+      );
+      expect(pages.length, 2);
+      expect(pages[0].nodes.length, 1);
+      expect(pages[0].nodes.first, same(leadNode));
+      expect(pages[1].nodes.length, 1);
+      expect(pages[1].nodes.first, same(testParagraph));
     });
   });
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:drift/drift.dart' hide Column, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kawi/core/database/app_database.dart';
@@ -10,6 +11,7 @@ import 'package:kawi/core/database/database_provider.dart';
 import 'package:kawi/core/theme/reader_theme.dart';
 import 'package:kawi/core/theme/reader_theme_preset.dart';
 import 'package:kawi/core/theme/reader_theme_tokens.dart';
+import 'package:kawi/features/reader/constants/reader_layout_constants.dart';
 import 'package:kawi/features/reader/models/document_models.dart';
 import 'package:kawi/features/reader/models/reader_settings.dart';
 import 'package:kawi/features/reader/providers/document_content_provider.dart';
@@ -171,6 +173,88 @@ void main() {
 
       // Verify that chapter text is rendered inside SelectableText widgets
       expect(find.byType(SelectableText), findsWidgets);
+    });
+
+    testWidgets(
+        'Paginated mode renders page content strictly <= viewport available height without line clipping',
+        (tester) async {
+      if (!epubFile.existsSync() || sampleNodes.isEmpty) return;
+
+      tester.view.physicalSize = const Size(1200, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterNodesProvider.overrideWith(
+            (ref, arg) => Future.value(sampleNodes),
+          ),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final pageViewFinder = find.byType(PageView);
+      expect(pageViewFinder, findsOneWidget);
+
+      final columnFinder = find.descendant(
+        of: pageViewFinder,
+        matching: find.byType(Column),
+      ).first;
+      expect(columnFinder, findsOneWidget);
+      final columnBox = tester.renderObject<RenderBox>(columnFinder);
+
+      const expectedAvailableHeight = 1600.0 -
+          EpubPaginationMetrics.topPadding -
+          EpubPaginationMetrics.bottomPadding;
+
+      // Height of the column content must not exceed the available height
+      expect(columnBox.size.height, lessThanOrEqualTo(expectedAvailableHeight));
+
+      // Rendered column width must strictly equal columnWidth (no double horizontal padding deduction)
+      final expectedColumnWidth = EpubPaginationMetrics.computeColumnWidth(
+        viewportWidth: 1200.0,
+        horizontalPadding: 24.0,
+        maxContentWidth: const ReaderSettings().contentMaxWidth,
+      );
+      expect(columnBox.size.width, equals(expectedColumnWidth));
+
+      // Test responsive reflow on window resize
+      tester.view.physicalSize = const Size(800, 1000);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final resizedColumnFinder = find.descendant(
+        of: pageViewFinder,
+        matching: find.byType(Column),
+      ).first;
+      final resizedColumnBox =
+          tester.renderObject<RenderBox>(resizedColumnFinder);
+      const expectedResizedAvailableHeight = 1000.0 -
+          EpubPaginationMetrics.topPadding -
+          EpubPaginationMetrics.bottomPadding;
+      expect(resizedColumnBox.size.height,
+          lessThanOrEqualTo(expectedResizedAvailableHeight));
+      final expectedResizedColumnWidth = EpubPaginationMetrics.computeColumnWidth(
+        viewportWidth: 800.0,
+        horizontalPadding: 24.0,
+        maxContentWidth: const ReaderSettings().contentMaxWidth,
+      );
+      expect(resizedColumnBox.size.width, equals(expectedResizedColumnWidth));
     });
 
     testWidgets('ReaderCanvas renders Continuous mode with ScrollablePositionedList of chapters',
@@ -1841,6 +1925,81 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Page 7 of 10'), findsOneWidget);
       expect(find.text('Chapter 1 Page 7 Content'), findsOneWidget);
+    });
+
+    testWidgets(
+        'Left and Right arrow keys turn pages on the first press and chevron InkWells do not accept focus',
+        (tester) async {
+      final chPages = List.generate(
+        3,
+        (i) => PageChunk(
+          pageIndexInChapter: i,
+          chapterIndex: 0,
+          startParagraphIndex: i,
+          startCharOffset: 0,
+          endParagraphIndex: i,
+          endCharOffset: 30,
+          nodes: [
+            ParagraphNode([TextSegment('Keyboard Page ${i + 1} Content')]),
+          ],
+        ),
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          chapterPagesProvider.overrideWith((ref, arg) async => chPages),
+          documentChapterNodesProvider.overrideWith(
+            (ref, arg) async => chPages.map((p) => p.nodes.first).toList(),
+          ),
+          readerSettingsProvider.overrideWith(
+            () => _TestReaderSettingsNotifier(
+              const ReaderSettings(
+                mode: ReadingMode.paginated,
+                fontSize: 16.0,
+                lineHeight: 1.5,
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _buildTestApp(container: container, document: aliceDoc),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Page 1 of 3'), findsOneWidget);
+
+      // Verify that left and right chevron InkWells have canRequestFocus == false
+      final leftChevronInkWell = tester.widget<InkWell>(
+        find.ancestor(
+          of: find.byIcon(PhosphorIconsLight.caretLeft),
+          matching: find.byType(InkWell),
+        ),
+      );
+      final rightChevronInkWell = tester.widget<InkWell>(
+        find.ancestor(
+          of: find.byIcon(PhosphorIconsLight.caretRight),
+          matching: find.byType(InkWell),
+        ),
+      );
+      expect(leftChevronInkWell.canRequestFocus, isFalse);
+      expect(rightChevronInkWell.canRequestFocus, isFalse);
+
+      // Send ArrowRight key: MUST turn to Page 2 on the very first key press
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Page 2 of 3'), findsOneWidget);
+
+      // Send ArrowLeft key: MUST turn back to Page 1 on the very first key press
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Page 1 of 3'), findsOneWidget);
     });
   });
 }

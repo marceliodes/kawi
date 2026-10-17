@@ -11,6 +11,7 @@ import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
+import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 import '../models/reader_settings.dart';
 import '../providers/document_content_provider.dart';
@@ -202,6 +203,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     Curve curve = Curves.easeInOut,
   }) {
     if (!mounted) return;
+    _focusNode.requestFocus();
     _currentPageIndexInChapter = pageIndex;
     final controller = _isEpub ? _effectiveEpubPageController : widget.pageController;
     final isReady = _isEpub ? _isEpubPageControllerReady : _isPageControllerReady;
@@ -213,6 +215,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
   void jumpToPageInChapter(int pageIndex) {
     if (!mounted) return;
+    _focusNode.requestFocus();
     final pages = _effectivePages;
     final int resolved;
     if (pageIndex == -1) {
@@ -739,6 +742,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   }
 
   void goToNextPage() {
+    _focusNode.requestFocus();
     if (_isEpub) {
       final pages = _effectivePages;
       if (pages.isEmpty) return;
@@ -809,6 +813,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   }
 
   void goToPreviousPage() {
+    _focusNode.requestFocus();
     if (_isEpub) {
       final pages = _effectivePages;
       if (pages.isEmpty) return;
@@ -1042,20 +1047,21 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       },
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onTap: widget.onToggleChrome,
+        onTap: () {
+          _focusNode.requestFocus();
+          widget.onToggleChrome();
+        },
         child: _isEpub
             ? LayoutBuilder(
                 builder: (context, constraints) {
-                  final columnWidth = (constraints.maxWidth -
-                          (widget.settings.horizontalPadding * 2))
-                      .clamp(100.0, widget.settings.contentMaxWidth);
-                  // Exact vertical chrome/padding/header height:
-                  // Top padding: Spacing.xl + 40.0 (72.0)
-                  // Bottom padding: Spacing.xl + 40.0 (72.0)
-                  // Header row (Page X of Y + divider + bottom margin Spacing.sm): 32.0
-                  const verticalChromeHeight = (Spacing.xl * 2 + 80.0) + 32.0;
-                  final columnHeight = (constraints.maxHeight - verticalChromeHeight)
-                      .clamp(100.0, constraints.maxHeight);
+                  final columnWidth = EpubPaginationMetrics.computeColumnWidth(
+                    viewportWidth: constraints.maxWidth,
+                    horizontalPadding: widget.settings.horizontalPadding,
+                    maxContentWidth: widget.settings.contentMaxWidth,
+                  );
+                  final columnHeight = EpubPaginationMetrics.computeColumnHeight(
+                    constraints.maxHeight,
+                  );
 
                   return isPaginated
                       ? _buildEpubPaginatedView(
@@ -1101,7 +1107,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       maxWidth: columnWidth,
       maxHeight: columnHeight,
       textStyle: textStyle,
-      paragraphSpacing: 16.0,
+      paragraphSpacing: EpubPaginationMetrics.paragraphSpacing,
     );
 
     final pagesAsync = ref.watch(chapterPagesProvider(params));
@@ -1246,6 +1252,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                     );
               }
               widget.onEpubPageChanged?.call(_currentChapterIndex, pageIndex);
+              _focusNode.requestFocus();
             },
           itemBuilder: (context, pageIndex) {
             if (pages.isEmpty) {
@@ -1266,48 +1273,55 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
               );
             }
 
-            return Center(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: columnWidth),
+            return Align(
+              alignment: Alignment.topCenter,
+              child: SizedBox(
+                width: columnWidth,
+                height: double.infinity,
                 child: Padding(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: horizontalPadding,
-                    vertical: Spacing.xl + 40.0,
+                  padding: const EdgeInsets.only(
+                    top: EpubPaginationMetrics.topPadding,
+                    bottom: EpubPaginationMetrics.bottomPadding,
                   ),
                   child: ClipRect(
                     child: OverflowBox(
                       alignment: Alignment.topCenter,
+                      minHeight: 0.0,
                       maxHeight: double.infinity,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           // Page Header Info (Chapter & Page in Chapter)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: Spacing.sm),
-                            child: Row(
-                              children: [
-                                Text(
-                                  'Page ${pageIndex + 1} of ${pages.length}',
-                                  style: AppTypography.micro.copyWith(
-                                    color: theme.textMuted,
-                                    letterSpacing: 0.5,
+                          SizedBox(
+                            height: EpubPaginationMetrics.pageHeaderHeight,
+                            child: Padding(
+                              padding: const EdgeInsets.only(bottom: Spacing.sm),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    'Page ${pageIndex + 1} of ${pages.length}',
+                                    style: AppTypography.micro.copyWith(
+                                      color: theme.textMuted,
+                                      letterSpacing: 0.5,
+                                    ),
                                   ),
-                                ),
-                                const Expanded(
-                                  child: Padding(
-                                    padding: EdgeInsets.symmetric(
-                                        horizontal: Spacing.sm),
-                                    child: Divider(height: 1),
+                                  const Expanded(
+                                    child: Padding(
+                                      padding: EdgeInsets.symmetric(
+                                          horizontal: Spacing.sm),
+                                      child: Divider(height: 1),
+                                    ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
 
                           for (final node in chunk.nodes)
                             Padding(
-                              padding: const EdgeInsets.only(bottom: 16.0),
+                              padding: const EdgeInsets.only(
+                                  bottom: EpubPaginationMetrics.paragraphSpacing),
                               child: _buildNodeWidget(
                                 node,
                                 textStyle,
@@ -1335,6 +1349,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
+              canRequestFocus: false,
+              excludeFromSemantics: true,
               onTap: goToPreviousPage,
               hoverColor: theme.textPrimary.withValues(alpha: 0.03),
               child: Center(
@@ -1357,6 +1373,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
+              canRequestFocus: false,
+              excludeFromSemantics: true,
               onTap: goToNextPage,
               hoverColor: theme.textPrimary.withValues(alpha: 0.03),
               child: Center(
@@ -1528,6 +1546,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
+              canRequestFocus: false,
+              excludeFromSemantics: true,
               onTap: goToPreviousPage,
               hoverColor: theme.textPrimary.withValues(alpha: 0.03),
               child: Center(
@@ -1548,6 +1568,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
+              canRequestFocus: false,
+              excludeFromSemantics: true,
               onTap: goToNextPage,
               hoverColor: theme.textPrimary.withValues(alpha: 0.03),
               child: Center(
@@ -2383,10 +2405,17 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
       );
     }
 
+    final strutStyle = EpubPaginationMetrics.strutStyleFor(effectiveStyle);
+
     if (!isMatched) {
       return SelectableText.rich(
-        TextSpan(children: _buildDefaultSpans(widget.node, effectiveStyle)),
+        TextSpan(
+          style: effectiveStyle,
+          children: _buildDefaultSpans(widget.node, effectiveStyle),
+        ),
         textAlign: TextAlign.start,
+        strutStyle: strutStyle,
+        textScaler: TextScaler.noScaling,
         contextMenuBuilder: widget.contextMenuBuilder,
       );
     }
@@ -2399,6 +2428,8 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
         ttsState: ttsState,
       ),
       textAlign: TextAlign.start,
+      strutStyle: strutStyle,
+      textScaler: TextScaler.noScaling,
       contextMenuBuilder: widget.contextMenuBuilder,
     );
   }

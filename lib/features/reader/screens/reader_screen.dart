@@ -11,6 +11,7 @@ import '../../../core/database/database_provider.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
+import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 import '../providers/document_content_provider.dart';
 import '../providers/reader_settings_provider.dart';
@@ -801,13 +802,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          final columnWidth = (constraints.maxWidth -
-                  (settings.horizontalPadding * 2))
-              .clamp(100.0, settings.contentMaxWidth);
-          final columnHeight = (constraints.maxHeight -
-                  (Spacing.xl * 2 + 80.0) -
-                  32.0)
-              .clamp(100.0, constraints.maxHeight);
+          final columnWidth = EpubPaginationMetrics.computeColumnWidth(
+            viewportWidth: constraints.maxWidth,
+            horizontalPadding: settings.horizontalPadding,
+            maxContentWidth: settings.contentMaxWidth,
+          );
+          final columnHeight = EpubPaginationMetrics.computeColumnHeight(
+            constraints.maxHeight,
+          );
           _currentColumnWidth = columnWidth;
           _currentColumnHeight = columnHeight;
 
@@ -827,7 +829,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                   height: settings.lineHeight,
                   color: theme.textPrimary,
                 ),
-                paragraphSpacing: 16.0,
+                paragraphSpacing: EpubPaginationMetrics.paragraphSpacing,
               );
               final pagesAsync =
                   ref.watch(chapterPagesProvider(paginationParams));

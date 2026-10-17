@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 
 /// Pure-Dart layout measurement and viewport pagination engine.
@@ -18,7 +19,7 @@ class ChapterPaginator {
     required TextStyle textStyle,
     required double paragraphSpacing,
     int chapterIndex = 0,
-    double safetyBuffer = 24.0,
+    double safetyBuffer = 12.0,
   }) {
     if (nodes.isEmpty || maxWidth <= 0 || maxHeight <= 0) {
       return [
@@ -36,9 +37,10 @@ class ChapterPaginator {
 
     final pages = <PageChunk>[];
     var currentPageNodes = <DocumentNode>[];
-    final effectiveBuffer =
-        maxHeight > 120.0 ? safetyBuffer : (maxHeight > 50.0 ? 8.0 : 0.0);
-    final usableHeight = (maxHeight - effectiveBuffer).clamp(20.0, maxHeight);
+    final lineHeight =
+        (textStyle.fontSize ?? 16.0) * (textStyle.height ?? 1.5);
+    final nodeHeadroomSlack = (lineHeight * 0.85).clamp(18.0, 26.0);
+    final usableHeight = maxHeight;
     var remainingHeight = usableHeight;
 
     var pageStartNodeIndex = 0;
@@ -128,12 +130,14 @@ class ChapterPaginator {
       final painter = TextPainter(
         text: span,
         textDirection: TextDirection.ltr,
+        strutStyle: EpubPaginationMetrics.strutStyleFor(nodeStyle),
       );
       painter.layout(maxWidth: maxWidth);
 
       final nodeTotalHeight = painter.height + paragraphSpacing;
-
-      if (nodeTotalHeight <= remainingHeight) {
+      final requiresBuffer = currentPageNodes.isNotEmpty;
+      if (nodeTotalHeight + (requiresBuffer ? nodeHeadroomSlack : 0.0) <=
+          remainingHeight) {
         // Fits completely on the current page
         currentPageNodes.add(currentNode);
         remainingHeight -= nodeTotalHeight;
@@ -150,20 +154,13 @@ class ChapterPaginator {
         i++;
       } else {
         // Exceeds remaining height
-        if (currentPageNodes.isNotEmpty) {
-          // Push entire node to the next page chunk
-          finalizePage();
-          continue;
-        }
-
-        // The page is empty, so a single giant paragraph exceeds the full page:
-        // Split it cleanly across pages
         final lineMetrics = painter.computeLineMetrics();
         var accumulatedHeight = 0.0;
         var fittingLinesCount = 0;
 
         for (final line in lineMetrics) {
-          if (accumulatedHeight + line.height + paragraphSpacing <= usableHeight) {
+          if (accumulatedHeight + line.height + paragraphSpacing <=
+              remainingHeight - nodeHeadroomSlack) {
             accumulatedHeight += line.height;
             fittingLinesCount++;
           } else {
@@ -171,18 +168,27 @@ class ChapterPaginator {
           }
         }
 
-        // If not even a single line fits with spacing, force 1 line so forward progress is guaranteed
+        // If some nodes are already on this page and less than 2 lines fit,
+        // defer the entire node to the next page chunk to avoid orphan single lines.
+        if (currentPageNodes.isNotEmpty && fittingLinesCount < 2) {
+          finalizePage();
+          continue;
+        }
+
+        // If the page is empty, force at least 1 line so forward progress is guaranteed
         if (fittingLinesCount == 0) {
           fittingLinesCount = 1;
           accumulatedHeight =
-              lineMetrics.isNotEmpty ? lineMetrics.first.height : usableHeight;
+              lineMetrics.isNotEmpty ? lineMetrics.first.height : remainingHeight;
         }
 
-        final targetY = accumulatedHeight > 0
-            ? (accumulatedHeight - 1.0)
-            : (lineMetrics.isNotEmpty ? lineMetrics.first.height - 1.0 : 0.0);
+        final lastLineIdx =
+            (fittingLinesCount - 1).clamp(0, lineMetrics.length - 1);
+        final targetLine = lineMetrics[lastLineIdx];
+        final targetX = targetLine.left + targetLine.width;
+        final targetY = targetLine.baseline - (targetLine.ascent * 0.5);
 
-        final pos = painter.getPositionForOffset(Offset(maxWidth, targetY));
+        final pos = painter.getPositionForOffset(Offset(targetX, targetY));
         var splitOffset = pos.offset;
 
         final plainText = currentNode is ParagraphNode
@@ -200,7 +206,46 @@ class ChapterPaginator {
           splitOffset = pos.offset.clamp(1, plainText.length);
         }
 
-        final split = _splitSegments(segments, splitOffset);
+        // Verification and self-correction loop:
+        // Ensure testPainter height + paragraphSpacing strictly <= remainingHeight - 4.0
+        // and line count does not exceed fittingLinesCount
+        var split = _splitSegments(segments, splitOffset);
+        var testPainter = TextPainter(
+          text: _buildTextSpan(split.top, nodeStyle),
+          textDirection: TextDirection.ltr,
+          strutStyle: EpubPaginationMetrics.strutStyleFor(nodeStyle),
+        )..layout(maxWidth: maxWidth);
+
+        final verificationSlack =
+            (currentPageNodes.isEmpty && fittingLinesCount == 1)
+                ? 0.0
+                : nodeHeadroomSlack;
+        while ((testPainter.height + paragraphSpacing >
+                    remainingHeight - verificationSlack ||
+                testPainter.computeLineMetrics().length > fittingLinesCount) &&
+            splitOffset > 1) {
+          // Pull back past preceding whitespace
+          while (splitOffset > 0 &&
+              RegExp(r'\s').hasMatch(plainText[splitOffset - 1])) {
+            splitOffset--;
+          }
+          // Pull back to the start of the preceding word
+          while (splitOffset > 0 &&
+              !RegExp(r'\s').hasMatch(plainText[splitOffset - 1])) {
+            splitOffset--;
+          }
+          if (splitOffset <= 0) {
+            splitOffset = 1;
+            break;
+          }
+          split = _splitSegments(segments, splitOffset);
+          testPainter = TextPainter(
+            text: _buildTextSpan(split.top, nodeStyle),
+            textDirection: TextDirection.ltr,
+            strutStyle: EpubPaginationMetrics.strutStyleFor(nodeStyle),
+          )..layout(maxWidth: maxWidth);
+        }
+
         final topNode = currentNode is ParagraphNode
             ? ParagraphNode(split.top)
             : HeadingNode((currentNode as HeadingNode).level, split.top);
@@ -214,8 +259,16 @@ class ChapterPaginator {
 
         finalizePage();
 
-        inFlightNode = bottomNode;
-        inFlightCharOffset = startOffsetInThisNode + splitOffset;
+        final isBottomEmpty =
+            split.bottom.every((s) => s.text.trim().isEmpty);
+        if (isBottomEmpty) {
+          inFlightNode = null;
+          inFlightCharOffset = 0;
+          i++;
+        } else {
+          inFlightNode = bottomNode;
+          inFlightCharOffset = startOffsetInThisNode + splitOffset;
+        }
       }
     }
 
