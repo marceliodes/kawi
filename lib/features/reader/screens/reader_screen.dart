@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
@@ -27,6 +28,31 @@ import '../../tts/providers/tts_provider.dart';
 import '../../tts/providers/voice_manager_provider.dart';
 import '../../tts/screens/voice_manager_screen.dart';
 import '../../tts/services/tts_text_normalizer.dart';
+
+/// Intent to toggle TTS playback (Play/Pause/Resume/Start).
+class ToggleTtsPlaybackIntent extends Intent {
+  const ToggleTtsPlaybackIntent();
+}
+
+/// Intent to skip forward to next TTS segment.
+class TtsSeekForwardIntent extends Intent {
+  const TtsSeekForwardIntent();
+}
+
+/// Intent to skip backward to previous TTS segment.
+class TtsSeekBackwardIntent extends Intent {
+  const TtsSeekBackwardIntent();
+}
+
+/// Intent to turn to next page in reader canvas.
+class ReaderNextPageIntent extends Intent {
+  const ReaderNextPageIntent();
+}
+
+/// Intent to turn to previous page in reader canvas.
+class ReaderPreviousPageIntent extends Intent {
+  const ReaderPreviousPageIntent();
+}
 
 class ReaderScreen extends ConsumerStatefulWidget {
   const ReaderScreen({super.key, required this.document});
@@ -784,6 +810,61 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     }
   }
 
+  void _toggleTtsPlayback() {
+    AppLogger.d('>>> [TTS UI] _toggleTtsPlayback called <<<');
+    final hasInstalledModels = ref.read(hasInstalledTtsModelsProvider);
+    if (!hasInstalledModels) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No TTS engine downloaded.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      VoiceManagerScreen.show(context);
+      return;
+    }
+
+    final ttsState = ref.read(ttsStateProvider);
+    if (ttsState.isPlaying) {
+      ref.read(ttsStateProvider.notifier).pause();
+    } else if (ttsState.isPaused) {
+      ref.read(ttsStateProvider.notifier).play();
+      setState(() => _isTtsBarVisible = true);
+    } else {
+      _startTts();
+    }
+  }
+
+  void _seekForwardTts() {
+    final ttsState = ref.read(ttsStateProvider);
+    if (ttsState.totalSentences > 0) {
+      ref.read(ttsStateProvider.notifier).nextSentence();
+    } else if (ttsState.isStopped) {
+      _startTts();
+    }
+  }
+
+  void _seekBackwardTts() {
+    final ttsState = ref.read(ttsStateProvider);
+    if (ttsState.totalSentences > 0) {
+      final isUnderway = ttsState.isPlaying &&
+          (ttsState.activeWordStart > 0 || ttsState.currentWord.isNotEmpty);
+      if (isUnderway) {
+        ref.read(ttsStateProvider.notifier).seekSentence(ttsState.currentSentenceIndex);
+      } else {
+        ref.read(ttsStateProvider.notifier).previousSentence();
+      }
+    }
+  }
+
+  void _turnToNextPage() {
+    _canvasKey.currentState?.goToNextPage();
+  }
+
+  void _turnToPreviousPage() {
+    _canvasKey.currentState?.goToPreviousPage();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = ReaderTheme.of(context);
@@ -810,230 +891,292 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
       }
     });
 
-    return Scaffold(
-      key: _scaffoldKey,
-      backgroundColor: theme.bgCanvas,
-      drawer: TocDrawer(
-        filePath: widget.document.filePath,
-        currentPageIndex: _currentChapterIndex,
-        isPaginated: settings.isPaginated,
-        onSelectPage: (pageIndex) {
-          Navigator.of(context).pop();
-          setState(() {
-            _currentPageIndexInChapter = 0;
-          });
-          _navigateToPage(pageIndex);
-        },
+    final shortcuts = <ShortcutActivator, Intent>{
+      // TTS Toggle: Ctrl + Space, hardware media keys
+      const SingleActivator(LogicalKeyboardKey.space, control: true):
+          const ToggleTtsPlaybackIntent(),
+      const SingleActivator(LogicalKeyboardKey.space, meta: true):
+          const ToggleTtsPlaybackIntent(),
+      const SingleActivator(LogicalKeyboardKey.mediaPlayPause):
+          const ToggleTtsPlaybackIntent(),
+      const SingleActivator(LogicalKeyboardKey.mediaPlay):
+          const ToggleTtsPlaybackIntent(),
+      const SingleActivator(LogicalKeyboardKey.mediaPause):
+          const ToggleTtsPlaybackIntent(),
+
+      // Seek / Skip TTS: Alt + Right Arrow (forward), Alt + Left Arrow (backward)
+      const SingleActivator(LogicalKeyboardKey.arrowRight, alt: true):
+          const TtsSeekForwardIntent(),
+      const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
+          const TtsSeekBackwardIntent(),
+
+      // Standard page navigation: Arrow Left/Right without Alt, PageUp/PageDown, Space / Shift + Space
+      const SingleActivator(LogicalKeyboardKey.arrowRight):
+          const ReaderNextPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.pageDown):
+          const ReaderNextPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.space, shift: true):
+          const ReaderPreviousPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.space):
+          const ReaderNextPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.arrowLeft):
+          const ReaderPreviousPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.pageUp):
+          const ReaderPreviousPageIntent(),
+    };
+
+    final actions = <Type, Action<Intent>>{
+      ToggleTtsPlaybackIntent: CallbackAction<ToggleTtsPlaybackIntent>(
+        onInvoke: (_) => _toggleTtsPlayback(),
       ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final columnWidth = EpubPaginationMetrics.computeColumnWidth(
-            viewportWidth: constraints.maxWidth,
-            horizontalPadding: settings.horizontalPadding,
-            maxContentWidth: settings.contentMaxWidth,
-          );
-          final columnHeight = EpubPaginationMetrics.computeColumnHeight(
-            constraints.maxHeight,
-          );
-          _currentColumnWidth = columnWidth;
-          _currentColumnHeight = columnHeight;
+      TtsSeekForwardIntent: CallbackAction<TtsSeekForwardIntent>(
+        onInvoke: (_) => _seekForwardTts(),
+      ),
+      TtsSeekBackwardIntent: CallbackAction<TtsSeekBackwardIntent>(
+        onInvoke: (_) => _seekBackwardTts(),
+      ),
+      ReaderNextPageIntent: CallbackAction<ReaderNextPageIntent>(
+        onInvoke: (_) => _turnToNextPage(),
+      ),
+      ReaderPreviousPageIntent: CallbackAction<ReaderPreviousPageIntent>(
+        onInvoke: (_) => _turnToPreviousPage(),
+      ),
+    };
 
-          List<PageChunk>? epubChunks;
-          List<DocumentNode>? epubNodes;
+    return Shortcuts(
+      shortcuts: shortcuts,
+      child: Actions(
+        actions: actions,
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            key: _scaffoldKey,
+            backgroundColor: theme.bgCanvas,
+            drawer: TocDrawer(
+              filePath: widget.document.filePath,
+              currentPageIndex: _currentChapterIndex,
+              isPaginated: settings.isPaginated,
+              onSelectPage: (pageIndex) {
+                Navigator.of(context).pop();
+                setState(() {
+                  _currentPageIndexInChapter = 0;
+                });
+                _navigateToPage(pageIndex);
+              },
+            ),
+            body: LayoutBuilder(
+              builder: (context, constraints) {
+                final columnWidth = EpubPaginationMetrics.computeColumnWidth(
+                  viewportWidth: constraints.maxWidth,
+                  horizontalPadding: settings.horizontalPadding,
+                  maxContentWidth: settings.contentMaxWidth,
+                );
+                final columnHeight = EpubPaginationMetrics.computeColumnHeight(
+                  constraints.maxHeight,
+                );
+                _currentColumnWidth = columnWidth;
+                _currentColumnHeight = columnHeight;
 
-          if (isEpub) {
-            if (settings.isPaginated) {
-              final paginationParams = PaginationParams(
-                filePath: widget.document.filePath,
-                chapterIndex: _currentChapterIndex,
-                maxWidth: columnWidth,
-                maxHeight: columnHeight,
-                textStyle: TextStyle(
-                  fontFamily: settings.fontFamily,
-                  fontSize: settings.fontSize,
-                  height: settings.lineHeight,
-                  color: theme.textPrimary,
-                ),
-                paragraphSpacing: EpubPaginationMetrics.paragraphSpacing,
-              );
-              final pagesAsync =
-                  ref.watch(chapterPagesProvider(paginationParams));
-              epubChunks = pagesAsync.asData?.value;
-              if (epubChunks != null && epubChunks.isNotEmpty) {
-                _currentChapterPages = epubChunks;
-              }
-            } else {
-              final nodesAsync = ref.watch(
-                documentChapterNodesProvider((
-                  filePath: widget.document.filePath,
-                  chapterIndex: _currentChapterIndex,
-                )),
-              );
-              epubNodes = nodesAsync.asData?.value;
-            }
-          }
+                List<PageChunk>? epubChunks;
+                List<DocumentNode>? epubNodes;
 
-          return Stack(
-            children: [
-              // Top edge hover detector to reveal chrome
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 32,
-                child: MouseRegion(
-                  onHover: (_) => _showChrome(),
-                  child: const SizedBox.expand(),
-                ),
-              ),
-
-              // Main Reading Canvas
-              Positioned.fill(
-                child: KeyedSubtree(
-                  key: ValueKey(
-                    '${widget.document.id}_${isEpub ? (settings.isPaginated ? "paginated" : "continuous") : "pdf"}',
-                  ),
-                  child: ReaderCanvas(
-                      key: _canvasKey,
+                if (isEpub) {
+                  if (settings.isPaginated) {
+                    final paginationParams = PaginationParams(
                       filePath: widget.document.filePath,
-                      pageCount: widget.document.pageCount,
-                      settings: settings,
-                      initialPageIndex: _currentChapterIndex,
-                      initialChapterIndex: _currentChapterIndex,
-                      initialScrollOffset: _currentScrollOffset,
-                      scrollController: _scrollController,
-                      itemScrollController: _itemScrollController,
-                      itemPositionsListener: _itemPositionsListener,
-                      pageController: _pageController,
-                      onPageChanged: _onPageOrScrollChanged,
-                      onToggleChrome: _toggleChrome,
-                      onPlayFromHere: (sentence) {
-                        _startTts(fromSentence: sentence);
-                      },
-                      epubChunks: epubChunks,
-                      epubNodes: settings.isPaginated ? null : epubNodes,
-                      isEpub: isEpub,
                       chapterIndex: _currentChapterIndex,
-                      pageIndexInChapter: _currentPageIndexInChapter,
-                      onNextChapter: _navigateToNextChapter,
-                      onPreviousChapter: _navigateToPreviousChapter,
-                      onEpubPageChanged: _onEpubPageChanged,
-                      onChapterChanged: (newChapterIndex) {
-                        if (_currentChapterIndex != newChapterIndex) {
-                          setState(() {
-                            _currentChapterIndex = newChapterIndex;
-                            _currentPageIndex = newChapterIndex;
-                            _currentPageIndexInChapter = 0;
-                          });
-                          _resolveChapterTitle(newChapterIndex);
-                          _debounceSaveProgress(newChapterIndex, 0.0);
-                        }
-                      },
-                      isUserDesyncedFromTts: _isUserDesyncedFromTts,
-                      onUserNavigated: () {
-                        if (!_isUserDesyncedFromTts) {
-                          setState(() {
-                            _isUserDesyncedFromTts = true;
-                          });
-                        }
-                      },
-                      onSpeakingPageDiscovered: (ch, page) {
-                        _speakingChapterIndex = ch;
-                        _speakingPageIndexInChapter = page;
-                      },
-                    ),
-                  ),
-                ),
-
-              // Auto-hiding Top Navigation Bar
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: AnimatedSlide(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeInOut,
-                  offset: _isChromeVisible ? Offset.zero : const Offset(0, -1),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 200),
-                    opacity: _isChromeVisible ? 1.0 : 0.0,
-                    child: _buildTopAppBar(theme, isTtsPlaying),
-                  ),
-                ),
-              ),
-
-              // Jump to speaking sentence chip
-              if (_isUserDesyncedFromTts && isTtsPlaying)
-                Positioned(
-                  bottom: Spacing.xl + MediaQuery.paddingOf(context).bottom + 76,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: ActionChip(
-                      avatar: PhosphorIcon(
-                        PhosphorIconsLight.arrowBendUpLeft,
-                        size: 16,
-                        color: theme.accent,
+                      maxWidth: columnWidth,
+                      maxHeight: columnHeight,
+                      textStyle: TextStyle(
+                        fontFamily: settings.fontFamily,
+                        fontSize: settings.fontSize,
+                        height: settings.lineHeight,
+                        color: theme.textPrimary,
                       ),
-                      label: const Text('Jump to speaking sentence'),
-                      onPressed: () {
-                        setState(() {
-                          _isUserDesyncedFromTts = false;
-                        });
-                        if (_speakingChapterIndex != null &&
-                            _speakingChapterIndex != _currentChapterIndex) {
-                          setState(() {
-                            _currentChapterIndex = _speakingChapterIndex!;
-                            _currentPageIndex = _speakingChapterIndex!;
-                            _currentPageIndexInChapter =
-                                _speakingPageIndexInChapter ?? 0;
-                          });
-                          _resolveChapterTitle(_currentChapterIndex);
-                          _debounceSaveProgress(_currentChapterIndex, 0.0);
-                        } else if (_speakingPageIndexInChapter != null &&
-                            _speakingPageIndexInChapter !=
-                                _currentPageIndexInChapter) {
-                          setState(() {
-                            _currentPageIndexInChapter =
-                                _speakingPageIndexInChapter!;
-                          });
-                          if (_isEpub) {
-                            _canvasKey.currentState?.animateToPageInChapter(
-                              _speakingPageIndexInChapter!,
-                            );
-                          } else if (_pageController.hasClients &&
-                              _pageController.positions.length == 1) {
-                            _pageController.animateToPage(
-                              _speakingPageIndexInChapter!,
-                              duration: const Duration(milliseconds: 250),
-                              curve: Curves.easeInOut,
-                            );
-                          }
-                        }
-                      },
-                    ),
-                  ),
-                ),
+                      paragraphSpacing: EpubPaginationMetrics.paragraphSpacing,
+                    );
+                    final pagesAsync =
+                        ref.watch(chapterPagesProvider(paginationParams));
+                    epubChunks = pagesAsync.asData?.value;
+                    if (epubChunks != null && epubChunks.isNotEmpty) {
+                      _currentChapterPages = epubChunks;
+                    }
+                  } else {
+                    final nodesAsync = ref.watch(
+                      documentChapterNodesProvider((
+                        filePath: widget.document.filePath,
+                        chapterIndex: _currentChapterIndex,
+                      )),
+                    );
+                    epubNodes = nodesAsync.asData?.value;
+                  }
+                }
 
-              // Floating Media Control Bar for TTS
-              if (_isTtsBarVisible || isTtsPlaying)
-                Positioned(
-                  bottom:
-                      Spacing.xl + MediaQuery.paddingOf(context).bottom + 16,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: TtsControlBar(
-                      onPlay: _startTts,
-                      onClose: () {
-                        setState(() => _isTtsBarVisible = false);
-                      },
+                return Stack(
+                  children: [
+                    // Top edge hover detector to reveal chrome
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: 32,
+                      child: MouseRegion(
+                        onHover: (_) => _showChrome(),
+                        child: const SizedBox.expand(),
+                      ),
                     ),
-                  ),
-                ),
-            ],
-          );
-        },
+
+                    // Main Reading Canvas
+                    Positioned.fill(
+                      child: KeyedSubtree(
+                        key: ValueKey(
+                          '${widget.document.id}_${isEpub ? (settings.isPaginated ? "paginated" : "continuous") : "pdf"}',
+                        ),
+                        child: ReaderCanvas(
+                          key: _canvasKey,
+                          filePath: widget.document.filePath,
+                          pageCount: widget.document.pageCount,
+                          settings: settings,
+                          initialPageIndex: _currentChapterIndex,
+                          initialChapterIndex: _currentChapterIndex,
+                          initialScrollOffset: _currentScrollOffset,
+                          scrollController: _scrollController,
+                          itemScrollController: _itemScrollController,
+                          itemPositionsListener: _itemPositionsListener,
+                          pageController: _pageController,
+                          onPageChanged: _onPageOrScrollChanged,
+                          onToggleChrome: _toggleChrome,
+                          onPlayFromHere: (sentence) {
+                            _startTts(fromSentence: sentence);
+                          },
+                          onToggleTts: _toggleTtsPlayback,
+                          epubChunks: epubChunks,
+                          epubNodes: settings.isPaginated ? null : epubNodes,
+                          isEpub: isEpub,
+                          chapterIndex: _currentChapterIndex,
+                          pageIndexInChapter: _currentPageIndexInChapter,
+                          onNextChapter: _navigateToNextChapter,
+                          onPreviousChapter: _navigateToPreviousChapter,
+                          onEpubPageChanged: _onEpubPageChanged,
+                          onChapterChanged: (newChapterIndex) {
+                            if (_currentChapterIndex != newChapterIndex) {
+                              setState(() {
+                                _currentChapterIndex = newChapterIndex;
+                                _currentPageIndex = newChapterIndex;
+                                _currentPageIndexInChapter = 0;
+                              });
+                              _resolveChapterTitle(newChapterIndex);
+                              _debounceSaveProgress(newChapterIndex, 0.0);
+                            }
+                          },
+                          isUserDesyncedFromTts: _isUserDesyncedFromTts,
+                          onUserNavigated: () {
+                            if (!_isUserDesyncedFromTts) {
+                              setState(() {
+                                _isUserDesyncedFromTts = true;
+                              });
+                            }
+                          },
+                          onSpeakingPageDiscovered: (ch, page) {
+                            _speakingChapterIndex = ch;
+                            _speakingPageIndexInChapter = page;
+                          },
+                        ),
+                      ),
+                    ),
+
+                    // Auto-hiding Top Navigation Bar
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: AnimatedSlide(
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeInOut,
+                        offset: _isChromeVisible ? Offset.zero : const Offset(0, -1),
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 200),
+                          opacity: _isChromeVisible ? 1.0 : 0.0,
+                          child: _buildTopAppBar(theme, isTtsPlaying),
+                        ),
+                      ),
+                    ),
+
+                    // Jump to speaking sentence chip
+                    if (_isUserDesyncedFromTts && isTtsPlaying)
+                      Positioned(
+                        bottom: Spacing.xl + MediaQuery.paddingOf(context).bottom + 76,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: ActionChip(
+                            avatar: PhosphorIcon(
+                              PhosphorIconsLight.arrowBendUpLeft,
+                              size: 16,
+                              color: theme.accent,
+                            ),
+                            label: const Text('Jump to speaking sentence'),
+                            onPressed: () {
+                              setState(() {
+                                _isUserDesyncedFromTts = false;
+                              });
+                              if (_speakingChapterIndex != null &&
+                                  _speakingChapterIndex != _currentChapterIndex) {
+                                setState(() {
+                                  _currentChapterIndex = _speakingChapterIndex!;
+                                  _currentPageIndex = _speakingChapterIndex!;
+                                  _currentPageIndexInChapter =
+                                      _speakingPageIndexInChapter ?? 0;
+                                });
+                                _resolveChapterTitle(_currentChapterIndex);
+                                _debounceSaveProgress(_currentChapterIndex, 0.0);
+                              } else if (_speakingPageIndexInChapter != null &&
+                                  _speakingPageIndexInChapter !=
+                                      _currentPageIndexInChapter) {
+                                setState(() {
+                                  _currentPageIndexInChapter =
+                                      _speakingPageIndexInChapter!;
+                                });
+                                if (_isEpub) {
+                                  _canvasKey.currentState?.animateToPageInChapter(
+                                    _speakingPageIndexInChapter!,
+                                  );
+                                } else if (_pageController.hasClients &&
+                                    _pageController.positions.length == 1) {
+                                  _pageController.animateToPage(
+                                    _speakingPageIndexInChapter!,
+                                    duration: const Duration(milliseconds: 250),
+                                    curve: Curves.easeInOut,
+                                  );
+                                }
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+
+                    // Floating Media Control Bar for TTS
+                    if (_isTtsBarVisible || isTtsPlaying)
+                      Positioned(
+                        bottom:
+                            Spacing.xl + MediaQuery.paddingOf(context).bottom + 16,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: TtsControlBar(
+                            onPlay: _startTts,
+                            onClose: () {
+                              setState(() => _isTtsBarVisible = false);
+                            },
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
       ),
     );
   }

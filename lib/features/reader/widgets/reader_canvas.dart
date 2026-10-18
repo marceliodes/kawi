@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:clock/clock.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -48,6 +49,7 @@ class ReaderCanvas extends ConsumerStatefulWidget {
     this.isUserDesyncedFromTts = false,
     this.onUserNavigated,
     this.onSpeakingPageDiscovered,
+    this.onToggleTts,
   });
 
   final String filePath;
@@ -63,6 +65,7 @@ class ReaderCanvas extends ConsumerStatefulWidget {
   final void Function(int pageIndex, double offset) onPageChanged;
   final VoidCallback onToggleChrome;
   final ValueChanged<String>? onPlayFromHere;
+  final VoidCallback? onToggleTts;
 
   // EPUB Reflow Engine integration properties
   final List<PageChunk>? epubChunks;
@@ -124,25 +127,94 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       widget.pageController.hasClients &&
       widget.pageController.positions.length == 1;
 
-  DateTime _lastHorizontalSwipeTime = DateTime.fromMillisecondsSinceEpoch(0);
+  static const double _kTrackpadSwipeThreshold = 50.0;
+  static const Duration _kTrackpadCooldown = Duration(milliseconds: 380);
+
+  double _accumulatedTrackpadDelta = 0.0;
+  DateTime _lastTrackpadPageTurnTime = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastOverscrollNavTime = DateTime.fromMillisecondsSinceEpoch(0);
 
-  void _handleHorizontalScrollDelta(double dx, int pageCount) {
-    final now = DateTime.now();
-    if (now.difference(_lastHorizontalSwipeTime).inMilliseconds < 400) return;
+  void _resetTrackpadAccumulation() {
+    _accumulatedTrackpadDelta = 0.0;
+  }
 
-    if (dx > 25.0) {
-      _lastHorizontalSwipeTime = now;
+  void _handleTrackpadDelta(double dx) {
+    if (!widget.settings.isPaginated) return;
+    if (dx == 0) return;
+
+    final now = clock.now();
+
+    // 1. Momentum latch / cooldown immediately after triggering a page turn
+    // (absorb subsequent inertial scroll events to prevent inertia flinging on desktop).
+    if (now.difference(_lastTrackpadPageTurnTime) < _kTrackpadCooldown) {
+      _accumulatedTrackpadDelta = 0.0;
+      return;
+    }
+
+    // 2. Clear accumulated delta on direction change
+    if ((_accumulatedTrackpadDelta > 0 && dx < 0) ||
+        (_accumulatedTrackpadDelta < 0 && dx > 0)) {
+      _accumulatedTrackpadDelta = 0.0;
+    }
+
+    // 3. Accumulate horizontal delta
+    _accumulatedTrackpadDelta += dx;
+
+    // 5. Check threshold
+    if (_accumulatedTrackpadDelta >= _kTrackpadSwipeThreshold) {
+      // Swipe left (scrollDelta.dx > 0) navigates to the next page
+      _accumulatedTrackpadDelta = 0.0;
+      _lastTrackpadPageTurnTime = now;
+      widget.onUserNavigated?.call();
       goToNextPage();
-    } else if (dx < -25.0) {
-      _lastHorizontalSwipeTime = now;
+    } else if (_accumulatedTrackpadDelta <= -_kTrackpadSwipeThreshold) {
+      // Swipe right (scrollDelta.dx < 0) navigates to the previous page
+      _accumulatedTrackpadDelta = 0.0;
+      _lastTrackpadPageTurnTime = now;
+      widget.onUserNavigated?.call();
       goToPreviousPage();
+    }
+  }
+
+  void _toggleTtsPlayback() {
+    if (widget.onToggleTts != null) {
+      widget.onToggleTts!();
+      return;
+    }
+    final ttsState = ref.read(ttsStateProvider);
+    if (ttsState.isPlaying) {
+      ref.read(ttsStateProvider.notifier).pause();
+    } else if (ttsState.isPaused) {
+      ref.read(ttsStateProvider.notifier).play();
+    } else {
+      final snippet = getFirstVisibleTextSnippet();
+      widget.onPlayFromHere?.call(snippet ?? '');
+    }
+  }
+
+  void _seekForwardTts() {
+    final ttsState = ref.read(ttsStateProvider);
+    if (ttsState.totalSentences > 0) {
+      ref.read(ttsStateProvider.notifier).nextSentence();
+    }
+  }
+
+  void _seekBackwardTts() {
+    final ttsState = ref.read(ttsStateProvider);
+    if (ttsState.totalSentences > 0) {
+      final isUnderway = ttsState.isPlaying &&
+          (ttsState.activeWordStart > 0 || ttsState.currentWord.isNotEmpty);
+      if (isUnderway) {
+        ref.read(ttsStateProvider.notifier).seekSentence(ttsState.currentSentenceIndex);
+      } else {
+        ref.read(ttsStateProvider.notifier).previousSentence();
+      }
     }
   }
 
   bool _onOverscroll(OverscrollNotification notification, int pageCount) {
     if (notification.dragDetails == null) return false;
-    final now = DateTime.now();
+    final now = clock.now();
     if (now.difference(_lastOverscrollNavTime).inMilliseconds < 500) return false;
 
     if (notification.overscroll < -5.0 && _currentEpubPage == 0) {
@@ -453,7 +525,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       newListener?.itemPositions.addListener(_onPositionsChanged);
     }
 
-    final bool chapterChanged = widget.chapterIndex != null &&
+    final bool chapterChanged = _isEpub &&
+        widget.chapterIndex != null &&
         (widget.chapterIndex != oldWidget.chapterIndex ||
             widget.chapterIndex != _currentChapterIndex);
 
@@ -533,8 +606,18 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
               ? _currentChapterPages.length
               : null;
           _recreateEpubPageController(0, maxP);
-        } else if (_isPageControllerReady) {
-          widget.pageController.jumpToPage(0);
+        } else {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _isPageControllerReady) {
+              final target = widget.initialPageIndex.clamp(
+                0,
+                widget.pageCount > 0 ? widget.pageCount - 1 : 0,
+              );
+              if (widget.pageController.page?.round() != target) {
+                widget.pageController.jumpToPage(target);
+              }
+            }
+          });
         }
       }
     }
@@ -742,7 +825,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     }
   }
 
-  void goToNextPage() {
+  void goToNextPage({bool animate = true}) {
     _focusNode.requestFocus();
     if (_isEpub) {
       final pages = _effectivePages;
@@ -767,7 +850,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         if (!_isProgrammaticNavigation) {
           widget.onUserNavigated?.call();
         }
-        if (_isEpubPageControllerReady) {
+        if (animate && _isEpubPageControllerReady) {
           _effectiveEpubPageController.animateToPage(
             nextPage,
             duration: const Duration(milliseconds: 200),
@@ -806,14 +889,22 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       widget.onUserNavigated?.call();
     }
     if (_isPageControllerReady) {
-      widget.pageController.nextPage(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeInOut,
-      );
+      if (animate) {
+        widget.pageController.nextPage(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+        );
+      } else {
+        final curPage = widget.pageController.page?.round() ?? 0;
+        final total = widget.pageCount > 0 ? widget.pageCount : 1;
+        if (curPage < total - 1) {
+          widget.pageController.jumpToPage(curPage + 1);
+        }
+      }
     }
   }
 
-  void goToPreviousPage() {
+  void goToPreviousPage({bool animate = true}) {
     _focusNode.requestFocus();
     if (_isEpub) {
       final pages = _effectivePages;
@@ -838,7 +929,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         if (!_isProgrammaticNavigation) {
           widget.onUserNavigated?.call();
         }
-        if (_isEpubPageControllerReady) {
+        if (animate && _isEpubPageControllerReady) {
           _effectiveEpubPageController.animateToPage(
             prevPage,
             duration: const Duration(milliseconds: 200),
@@ -877,10 +968,17 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       widget.onUserNavigated?.call();
     }
     if (_isPageControllerReady) {
-      widget.pageController.previousPage(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeInOut,
-      );
+      if (animate) {
+        widget.pageController.previousPage(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+        );
+      } else {
+        final curPage = widget.pageController.page?.round() ?? 0;
+        if (curPage > 0) {
+          widget.pageController.jumpToPage(curPage - 1);
+        }
+      }
     }
   }
 
@@ -1011,17 +1109,35 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     });
 
     return Listener(
+      behavior: HitTestBehavior.translucent,
       onPointerSignal: (event) {
         if (event is PointerScrollEvent) {
           if (event.scrollDelta.dy.abs() > 1.0) {
             widget.onUserNavigated?.call();
           }
-          if (widget.settings.isPaginated && event.scrollDelta.dx.abs() > 15.0) {
-            widget.onUserNavigated?.call();
-            final pages = _effectivePages;
-            _handleHorizontalScrollDelta(event.scrollDelta.dx, pages.length);
+          if (widget.settings.isPaginated && event.scrollDelta.dx != 0) {
+            _handleTrackpadDelta(event.scrollDelta.dx);
           }
         }
+      },
+      onPointerPanZoomUpdate: (event) {
+        if (widget.settings.isPaginated && event.panDelta.dx != 0) {
+          // Two-finger pan right on trackpad produces panDelta.dx > 0,
+          // matching scrollDelta.dx < 0 (swipe right -> previous page).
+          _handleTrackpadDelta(-event.panDelta.dx);
+        }
+      },
+      onPointerPanZoomEnd: (_) {
+        _resetTrackpadAccumulation();
+      },
+      onPointerDown: (_) {
+        _resetTrackpadAccumulation();
+      },
+      onPointerUp: (_) {
+        _resetTrackpadAccumulation();
+      },
+      onPointerCancel: (_) {
+        _resetTrackpadAccumulation();
       },
       onPointerMove: (event) {
         if (event.buttons != 0 || event.kind == PointerDeviceKind.touch) {
@@ -1033,15 +1149,51 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         autofocus: true,
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent) {
-          if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
-              event.logicalKey == LogicalKeyboardKey.pageUp) {
+          final isAlt = HardwareKeyboard.instance.isAltPressed;
+          final isControl = HardwareKeyboard.instance.isControlPressed ||
+              HardwareKeyboard.instance.isMetaPressed;
+          final isShift = HardwareKeyboard.instance.isShiftPressed;
+
+          // Toggle TTS Playback: Ctrl + Space, mediaPlayPause, mediaPlay, mediaPause
+          if (isControl && event.logicalKey == LogicalKeyboardKey.space) {
+            _toggleTtsPlayback();
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause ||
+              event.logicalKey == LogicalKeyboardKey.mediaPlay ||
+              event.logicalKey == LogicalKeyboardKey.mediaPause) {
+            _toggleTtsPlayback();
+            return KeyEventResult.handled;
+          }
+
+          // Seek / Skip TTS: Alt + Right Arrow (forward), Alt + Left Arrow (backward)
+          if (isAlt && event.logicalKey == LogicalKeyboardKey.arrowRight) {
+            _seekForwardTts();
+            return KeyEventResult.handled;
+          }
+          if (isAlt && event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            _seekBackwardTts();
+            return KeyEventResult.handled;
+          }
+
+          // Shift + Space: navigate to previous page
+          if (!isAlt && !isControl && isShift && event.logicalKey == LogicalKeyboardKey.space) {
             goToPreviousPage();
             return KeyEventResult.handled;
-          } else if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
-              event.logicalKey == LogicalKeyboardKey.pageDown ||
-              event.logicalKey == LogicalKeyboardKey.space) {
-            goToNextPage();
-            return KeyEventResult.handled;
+          }
+
+          // Standard page turns without Alt, Ctrl, or Shift
+          if (!isAlt && !isControl && !isShift) {
+            if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+                event.logicalKey == LogicalKeyboardKey.pageUp) {
+              goToPreviousPage();
+              return KeyEventResult.handled;
+            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
+                event.logicalKey == LogicalKeyboardKey.pageDown ||
+                event.logicalKey == LogicalKeyboardKey.space) {
+              goToNextPage();
+              return KeyEventResult.handled;
+            }
           }
         }
         return KeyEventResult.ignored;
@@ -1241,6 +1393,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           child: PageView.builder(
             key: ValueKey('epub_pageview_${widget.chapterIndex ?? _currentChapterIndex}'),
             controller: _effectiveEpubPageController,
+            physics: const NeverScrollableScrollPhysics(),
             itemCount: effectivePageCount,
             onPageChanged: (pageIndex) {
               _currentPageIndexInChapter = pageIndex;
@@ -1511,6 +1664,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       children: [
         PageView.builder(
           controller: widget.pageController,
+          physics: const NeverScrollableScrollPhysics(),
           itemCount: effectivePageCount,
           onPageChanged: (index) {
             widget.onPageChanged(index, 0.0);
