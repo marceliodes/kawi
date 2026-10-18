@@ -20,6 +20,7 @@ import '../providers/document_content_provider.dart';
 import '../providers/reader_settings_provider.dart';
 import '../services/document_extractor.dart';
 import '../widgets/reader_canvas.dart';
+import '../widgets/reader_settings_modal.dart';
 import '../widgets/toc_drawer.dart';
 import '../widgets/typography_settings_sheet.dart';
 import '../widgets/tts_control_bar.dart';
@@ -370,13 +371,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     _debounceSaveProgress(clampedPage, _currentScrollOffset, pageIndexInChapter: 0);
   }
 
-  void _openTypographySheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => const TypographySettingsSheet(),
+  Future<void> _openSettingsModal([int initialTab = 0]) async {
+    await ReaderSettingsModal.show(
+      context,
+      initialTab: initialTab,
+      onToggleTts: _toggleTtsPlayback,
     );
+    if (!mounted) return;
+    _canvasKey.currentState?.requestFocus();
   }
 
   Future<void> _startTts({String? fromSentence}) async {
@@ -419,7 +421,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
                 height: settings.lineHeight,
                 color: theme.textPrimary,
               ),
-              paragraphSpacing: 16.0,
+              paragraphSpacing: settings.paragraphSpacing,
             );
             try {
               pages = await ref.read(chapterPagesProvider(paginationParams).future);
@@ -781,34 +783,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     }
   }
 
-  void _toggleTts() {
-    AppLogger.d('>>> [TTS UI] _toggleTts called <<<');
-    final hasInstalledModels = ref.read(hasInstalledTtsModelsProvider);
-    if (!hasInstalledModels) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No TTS engine downloaded.'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-      VoiceManagerScreen.show(context);
-      return;
-    }
-
-    final ttsState = ref.read(ttsStateProvider);
-    if (ttsState.isPlaying) {
-      ref.read(ttsStateProvider.notifier).pause();
-    } else if (ttsState.isPaused) {
-      ref.read(ttsStateProvider.notifier).play();
-      setState(() => _isTtsBarVisible = true);
-    } else {
-      if (_isTtsBarVisible) {
-        setState(() => _isTtsBarVisible = false);
-      } else {
-        _startTts();
-      }
-    }
-  }
 
   void _toggleTtsPlayback() {
     AppLogger.d('>>> [TTS UI] _toggleTtsPlayback called <<<');
@@ -993,7 +967,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
                         height: settings.lineHeight,
                         color: theme.textPrimary,
                       ),
-                      paragraphSpacing: EpubPaginationMetrics.paragraphSpacing,
+                      paragraphSpacing: settings.paragraphSpacing,
                     );
                     final pagesAsync =
                         ref.watch(chapterPagesProvider(paginationParams));
@@ -1264,11 +1238,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
 
           const SizedBox(width: Spacing.xs),
 
-          // Read Aloud (TTS) Toggle
+          // Dedicated Read Aloud (TTS) Button
           IconButton(
-            tooltip: hasInstalledModels
-                ? 'Read Aloud (TTS)'
-                : 'No TTS engine downloaded.',
+            tooltip: 'Read aloud',
             icon: PhosphorIcon(
               _isTtsBarVisible || isTtsPlaying
                   ? PhosphorIconsFill.speakerHigh
@@ -1280,29 +1252,18 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
                       ? theme.accent
                       : theme.textPrimary),
             ),
-            onPressed: _toggleTts,
+            onPressed: _toggleTtsPlayback,
           ),
 
-          // Voice Manager / TTS Voices Settings
+          // Unified Reader Settings (Display & Audio)
           IconButton(
-            tooltip: 'Voice Settings',
+            tooltip: 'Reader Settings',
             icon: PhosphorIcon(
-              PhosphorIconsLight.waveform,
+              PhosphorIconsLight.faders,
               size: 20,
               color: theme.textPrimary,
             ),
-            onPressed: () => VoiceManagerScreen.show(context),
-          ),
-
-          // Typography & Appearance Settings Toggle
-          IconButton(
-            tooltip: 'Appearance & Typography',
-            icon: PhosphorIcon(
-              PhosphorIconsLight.textAa,
-              size: 20,
-              color: theme.textPrimary,
-            ),
-            onPressed: _openTypographySheet,
+            onPressed: _openSettingsModal,
           ),
         ],
       ),

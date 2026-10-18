@@ -42,6 +42,11 @@ class ReaderSettingsNotifier extends Notifier<ReaderSettings> {
     await _persist('reader_line_height', height.toString());
   }
 
+  Future<void> setParagraphSpacing(double spacing) async {
+    state = state.copyWith(paragraphSpacing: spacing);
+    await _persist('reader_paragraph_spacing', spacing.toString());
+  }
+
   Future<void> setContentMaxWidth(double width) async {
     state = state.copyWith(contentMaxWidth: width);
     await _persist('reader_content_max_width', width.toString());
@@ -55,6 +60,16 @@ class ReaderSettingsNotifier extends Notifier<ReaderSettings> {
   Future<void> setReadingMode(ReadingMode mode) async {
     state = state.copyWith(mode: mode);
     await _persist('reader_mode', mode.name);
+  }
+
+  Future<void> setTtsAutoAdvance(bool enabled) async {
+    state = state.copyWith(ttsAutoAdvance: enabled);
+    await _persist('reader_tts_auto_advance', enabled.toString());
+  }
+
+  Future<void> setTtsHighlightStyle(TtsHighlightStyle style) async {
+    state = state.copyWith(ttsHighlightStyle: style);
+    await _persist('reader_tts_highlight_style', style.name);
   }
 
   Future<void> updateSettings(ReaderSettings newSettings) async {

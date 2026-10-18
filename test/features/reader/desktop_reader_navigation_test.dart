@@ -464,9 +464,9 @@ void main() {
       await tester.pumpAndSettle();
 
       // Explicitly focus a different child widget (e.g. top bar button)
-      final typographyButton = find.byTooltip('Appearance & Typography');
-      expect(typographyButton, findsOneWidget);
-      Focus.of(tester.element(typographyButton)).requestFocus();
+      final settingsButton = find.byTooltip('Reader Settings');
+      expect(settingsButton, findsOneWidget);
+      Focus.of(tester.element(settingsButton)).requestFocus();
       await tester.pump();
 
       // Press Right Arrow: Should turn page forward to Page 2 via reader shortcuts

@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:drift/drift.dart' hide isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kawi/core/database/app_database.dart';
@@ -107,7 +108,8 @@ void main() {
       expect(find.text('Meditations of Marcus Aurelius'), findsOneWidget);
       expect(find.byTooltip('Back to Library'), findsOneWidget);
       expect(find.byTooltip('Table of Contents'), findsOneWidget);
-      expect(find.byTooltip('Appearance & Typography'), findsOneWidget);
+      expect(find.byTooltip('Read aloud'), findsOneWidget);
+      expect(find.byTooltip('Reader Settings'), findsOneWidget);
 
       // Verify Reading Canvas with loaded text
       expect(find.byType(ReaderCanvas), findsOneWidget);
@@ -122,7 +124,7 @@ void main() {
   );
 
   testWidgets(
-    'tapping Appearance opens TypographySettingsSheet and modifies settings',
+    'tapping Reader Settings opens ReaderSettingsModal and modifies settings',
     (tester) async {
       final container = ProviderContainer(
         overrides: [
@@ -141,12 +143,14 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 500));
 
-      // Tap Appearance button
-      await tester.tap(find.byTooltip('Appearance & Typography'));
+      // Tap Reader Settings button
+      await tester.tap(find.byTooltip('Reader Settings'));
       await tester.pump(const Duration(milliseconds: 500));
 
-      expect(find.byType(TypographySettingsSheet), findsOneWidget);
-      expect(find.text('Appearance & Typography'), findsOneWidget);
+      expect(find.byType(ReaderSettingsModal), findsOneWidget);
+      expect(find.text('Reader Settings'), findsOneWidget);
+      expect(find.text('Display'), findsOneWidget);
+      expect(find.text('Audio'), findsOneWidget);
       expect(find.text('TYPEFACE'), findsOneWidget);
       expect(find.text('LAYOUT MODE'), findsOneWidget);
 
@@ -330,10 +334,10 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 500));
 
-      // Tap the Read Aloud (TTS) button in top bar
-      final ttsButton = find.byTooltip('Read Aloud (TTS)');
-      expect(ttsButton, findsOneWidget);
-      await tester.tap(ttsButton);
+      // Toggle TTS via desktop shortcut Ctrl + Space
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -396,8 +400,10 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 500));
 
-      final ttsButton = find.byTooltip('Read Aloud (TTS)');
-      await tester.tap(ttsButton);
+      // Toggle TTS via desktop shortcut Ctrl + Space
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -535,6 +541,50 @@ void main() {
       expect(progress!.documentId, equals(testDoc.id));
     },
   );
+
+  testWidgets(
+    'tapping top-bar Read aloud button starts TTS and brings up floating media controller',
+    (tester) async {
+      final mockTts = _MockReaderTtsNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ttsStateProvider.overrideWith(() => mockTts),
+          documentTocProvider(testDoc.filePath)
+              .overrideWith((ref) => Future.value(sampleToc)),
+          documentPageContentProvider.overrideWith(
+            (ref, arg) => Future.value(mockPageContent(arg.pageIndex)),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _createReaderTestApp(container: container, document: testDoc),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // Media controller is not visible initially
+      expect(find.byType(TtsControlBar), findsNothing);
+
+      // Tap Read aloud button
+      final readAloudButton = find.byTooltip('Read aloud');
+      expect(readAloudButton, findsOneWidget);
+      await tester.tap(readAloudButton);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+
+      // TTS playback started and floating media transport pill appeared
+      expect(mockTts.state.isPlaying, isTrue);
+      expect(find.byType(TtsControlBar), findsOneWidget);
+
+      // Tapping again pauses playback
+      await tester.tap(readAloudButton);
+      await tester.pumpAndSettle();
+      expect(mockTts.state.isPaused, isTrue);
+    },
+  );
 }
 
 class _MockReaderTtsNotifier extends TtsStateNotifier {
@@ -555,6 +605,16 @@ class _MockReaderTtsNotifier extends TtsStateNotifier {
       totalSentences: sentences.length,
       currentSentenceText: sentences.isNotEmpty ? sentences[startSentenceIndex].text : '',
     );
+  }
+
+  @override
+  void play() {
+    state = state.copyWith(playbackState: TtsPlaybackState.playing);
+  }
+
+  @override
+  void pause() {
+    state = state.copyWith(playbackState: TtsPlaybackState.paused);
   }
 
   @override

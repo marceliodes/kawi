@@ -17,6 +17,7 @@ import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 import '../models/reader_settings.dart';
 import '../providers/document_content_provider.dart';
+import '../providers/reader_settings_provider.dart';
 import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/services/tts_text_normalizer.dart';
@@ -269,6 +270,12 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
   double? safeGetEpubPage() => _safeGetPage(_effectiveEpubPageController);
   double? safeGetPage() => _safeGetPage(widget.pageController);
+
+  void requestFocus() {
+    _focusNode.requestFocus();
+  }
+
+  FocusNode get focusNode => _focusNode;
 
   void animateToPageInChapter(
     int pageIndex, {
@@ -1049,7 +1056,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       return;
     }
 
-    if (widget.isUserDesyncedFromTts) {
+    final readerSettings = ref.read(readerSettingsProvider);
+    if (widget.isUserDesyncedFromTts || !readerSettings.ttsAutoAdvance) {
       return;
     }
 
@@ -1474,8 +1482,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
                           for (final node in chunk.nodes)
                             Padding(
-                              padding: const EdgeInsets.only(
-                                  bottom: EpubPaginationMetrics.paragraphSpacing),
+                              padding: EdgeInsets.only(
+                                  bottom: ref.watch(readerSettingsProvider).paragraphSpacing),
                               child: _buildNodeWidget(
                                 node,
                                 textStyle,
@@ -1939,9 +1947,17 @@ class _PageContentWidgetState extends ConsumerState<_PageContentWidget> {
         (ttsState.isPlaying || ttsState.isPaused) &&
         ttsState.currentSentenceText.trim().isNotEmpty;
 
-    final sentenceHighlightStyle = baseStyle.copyWith(
-      backgroundColor: theme.ttsHighlight,
-    );
+    final settings = ref.read(readerSettingsProvider);
+    final sentenceHighlightStyle =
+        settings.ttsHighlightStyle == TtsHighlightStyle.underline
+            ? baseStyle.copyWith(
+                decoration: TextDecoration.underline,
+                decorationColor: theme.accent,
+                decorationThickness: 2.0,
+              )
+            : baseStyle.copyWith(
+                backgroundColor: theme.ttsHighlight,
+              );
 
     final paragraphRegex = RegExp(r'(?:\r?\n){2,}');
     final sentenceDelimiter = RegExp(
@@ -2401,7 +2417,8 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
   }
 
   void _scrollToFollowHighlight() {
-    if (!mounted || widget.isUserDesynced || !widget.isContinuous) return;
+    final readerSettings = ref.read(readerSettingsProvider);
+    if (!mounted || widget.isUserDesynced || !widget.isContinuous || !readerSettings.ttsAutoAdvance) return;
 
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
@@ -2581,6 +2598,7 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
         textStyle: effectiveStyle,
         theme: widget.theme,
         ttsState: ttsState,
+        highlightStyle: ref.watch(readerSettingsProvider).ttsHighlightStyle,
       ),
       textAlign: TextAlign.start,
       strutStyle: strutStyle,
@@ -2596,6 +2614,7 @@ TextSpan _buildHighlightedNodeSpan({
   required TextStyle textStyle,
   required ReaderThemeData theme,
   required TtsState ttsState,
+  TtsHighlightStyle highlightStyle = TtsHighlightStyle.background,
 }) {
   if (!ttsState.isPlaying && !ttsState.isPaused) {
     return TextSpan(children: _buildDefaultSpans(node, textStyle));
@@ -2612,6 +2631,14 @@ TextSpan _buildHighlightedNodeSpan({
     return TextSpan(children: _buildDefaultSpans(node, textStyle));
   }
 
+  final highlightedStyle = highlightStyle == TtsHighlightStyle.underline
+      ? textStyle.copyWith(
+          decoration: TextDecoration.underline,
+          decorationColor: theme.accent,
+          decorationThickness: 2.0,
+        )
+      : textStyle.copyWith(backgroundColor: theme.ttsHighlight);
+
   // Normalize whitespace and trim string comparison between node.toPlainText()
   // and ttsState.currentSentenceText so title sentences like "Chapter 3: Resolve"
   // match and highlight immediately on speech start.
@@ -2621,17 +2648,17 @@ TextSpan _buildHighlightedNodeSpan({
   if (isFullMatch) {
     final spans = _buildDefaultSpans(
       node,
-      textStyle.copyWith(backgroundColor: theme.ttsHighlight),
+      highlightedStyle,
     );
     if (spans.isNotEmpty) {
       return TextSpan(
-        style: textStyle.copyWith(backgroundColor: theme.ttsHighlight),
+        style: highlightedStyle,
         children: spans,
       );
     }
     return TextSpan(
       text: paragraphText,
-      style: textStyle.copyWith(backgroundColor: theme.ttsHighlight),
+      style: highlightedStyle,
     );
   }
 
@@ -2670,7 +2697,7 @@ TextSpan _buildHighlightedNodeSpan({
       TextSpan(text: paragraphText.substring(0, startIndex), style: textStyle),
     TextSpan(
       text: paragraphText.substring(startIndex, endIndex),
-      style: textStyle.copyWith(backgroundColor: theme.ttsHighlight),
+      style: highlightedStyle,
     ),
     if (endIndex < paragraphText.length)
       TextSpan(text: paragraphText.substring(endIndex), style: textStyle),
