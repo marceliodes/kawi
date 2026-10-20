@@ -282,7 +282,9 @@ class ChapterPaginator {
   /// Locates the page index in [pages] that contains the given anchor offset.
   ///
   /// If the anchor is before the first page, returns 0. If after the last page,
-  /// returns `pages.length - 1`.
+  /// returns `pages.length - 1`. If the offset falls in a trimmed whitespace
+  /// boundary between pages, resolves to the closest containing page rather
+  /// than falling through to the end of the chapter.
   static int findPageForAnchor({
     required List<PageChunk> pages,
     required int paragraphIndex,
@@ -290,6 +292,7 @@ class ChapterPaginator {
   }) {
     if (pages.isEmpty) return 0;
 
+    // 1. Direct contains check across all pages
     for (var i = 0; i < pages.length; i++) {
       if (pages[i].containsAnchor(
         paragraphIndex: paragraphIndex,
@@ -299,9 +302,30 @@ class ChapterPaginator {
       }
     }
 
-    if (paragraphIndex <= pages.first.startParagraphIndex) {
+    // 2. Before first page
+    if (paragraphIndex < pages.first.startParagraphIndex ||
+        (paragraphIndex == pages.first.startParagraphIndex &&
+            charOffset <= pages.first.startCharOffset)) {
       return 0;
     }
+
+    // 3. Fallback: Find closest page containing or immediately preceding the paragraph/char
+    for (var i = 0; i < pages.length; i++) {
+      final page = pages[i];
+      if (paragraphIndex < page.startParagraphIndex) {
+        return (i - 1).clamp(0, pages.length - 1);
+      }
+      if (paragraphIndex == page.startParagraphIndex &&
+          charOffset < page.startCharOffset) {
+        return (i - 1).clamp(0, pages.length - 1);
+      }
+      if (paragraphIndex <= page.endParagraphIndex) {
+        if (charOffset <= page.endCharOffset) {
+          return i;
+        }
+      }
+    }
+
     return pages.length - 1;
   }
 

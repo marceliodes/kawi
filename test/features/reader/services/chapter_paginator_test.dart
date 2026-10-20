@@ -595,4 +595,174 @@ void main() {
       expect(pages[1].nodes.first, same(testParagraph));
     });
   });
+
+  group('ChapterPaginator: Anchor Resolution & Boundary Gap Resilience', () {
+    test('returns 0 when pages list is empty', () {
+      final pageIndex = ChapterPaginator.findPageForAnchor(
+        pages: const [],
+        paragraphIndex: 5,
+        charOffset: 50,
+      );
+      expect(pageIndex, 0);
+    });
+
+    test('returns 0 when anchor is before first page', () {
+      final pages = [
+        const PageChunk(
+          pageIndexInChapter: 0,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 2,
+          endParagraphIndex: 3,
+          startCharOffset: 10,
+          endCharOffset: 50,
+        ),
+      ];
+
+      expect(
+        ChapterPaginator.findPageForAnchor(
+          pages: pages,
+          paragraphIndex: 1,
+          charOffset: 0,
+        ),
+        0,
+      );
+      expect(
+        ChapterPaginator.findPageForAnchor(
+          pages: pages,
+          paragraphIndex: 2,
+          charOffset: 5,
+        ),
+        0,
+      );
+    });
+
+    test('returns pages.length - 1 when anchor is after the last page', () {
+      final pages = [
+        const PageChunk(
+          pageIndexInChapter: 0,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 0,
+          endParagraphIndex: 1,
+          startCharOffset: 0,
+          endCharOffset: 100,
+        ),
+        const PageChunk(
+          pageIndexInChapter: 1,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 1,
+          endParagraphIndex: 2,
+          startCharOffset: 105,
+          endCharOffset: 80,
+        ),
+      ];
+
+      expect(
+        ChapterPaginator.findPageForAnchor(
+          pages: pages,
+          paragraphIndex: 5,
+          charOffset: 0,
+        ),
+        1,
+      );
+    });
+
+    test('exact match locates correct page within multi-page chapter', () {
+      final pages = [
+        const PageChunk(
+          pageIndexInChapter: 0,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 0,
+          endParagraphIndex: 2,
+          startCharOffset: 0,
+          endCharOffset: 50,
+        ),
+        const PageChunk(
+          pageIndexInChapter: 1,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 2,
+          endParagraphIndex: 4,
+          startCharOffset: 60,
+          endCharOffset: 30,
+        ),
+        const PageChunk(
+          pageIndexInChapter: 2,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 4,
+          endParagraphIndex: 6,
+          startCharOffset: 40,
+          endCharOffset: 100,
+        ),
+      ];
+
+      expect(
+        ChapterPaginator.findPageForAnchor(
+          pages: pages,
+          paragraphIndex: 3,
+          charOffset: 10,
+        ),
+        1,
+      );
+      expect(
+        ChapterPaginator.findPageForAnchor(
+          pages: pages,
+          paragraphIndex: 5,
+          charOffset: 20,
+        ),
+        2,
+      );
+    });
+
+    test('resolves to adjacent page when charOffset falls in trimmed whitespace gap between pages', () {
+      // Paragraph 2 split across page 0 and page 1:
+      // Page 0 ends at char 140.
+      // Trimmed whitespace gap between 140 and 150.
+      // Page 1 starts at char 150.
+      final pages = [
+        const PageChunk(
+          pageIndexInChapter: 0,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 1,
+          endParagraphIndex: 2,
+          startCharOffset: 0,
+          endCharOffset: 140,
+        ),
+        const PageChunk(
+          pageIndexInChapter: 1,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 2,
+          endParagraphIndex: 3,
+          startCharOffset: 150,
+          endCharOffset: 80,
+        ),
+        const PageChunk(
+          pageIndexInChapter: 2,
+          chapterIndex: 0,
+          nodes: [],
+          startParagraphIndex: 3,
+          endParagraphIndex: 5,
+          startCharOffset: 90,
+          endCharOffset: 200,
+        ),
+      ];
+
+      // Offset 145 falls in trimmed whitespace between Page 0 and Page 1
+      final resolved = ChapterPaginator.findPageForAnchor(
+        pages: pages,
+        paragraphIndex: 2,
+        charOffset: 145,
+      );
+
+      // Must NOT fall through to the last page (index 2)!
+      expect(resolved, anyOf(equals(0), equals(1)));
+      expect(resolved, isNot(equals(2)));
+    });
+  });
 }

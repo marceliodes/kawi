@@ -136,6 +136,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
 
         _resolveChapterTitle(_currentChapterIndex);
 
+        if (_isEpub) {
+          ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+                chapterIndex: _currentChapterIndex,
+                paragraphIndex: 0,
+                charOffset: 0,
+              );
+        }
+
         // Restore scroll or page position after layout
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
@@ -155,6 +163,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
           });
         });
       } else if (mounted) {
+        if (_isEpub) {
+          ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+                chapterIndex: 0,
+                paragraphIndex: 0,
+                charOffset: 0,
+              );
+        }
         _resolveChapterTitle(0);
       }
     } catch (_) {
