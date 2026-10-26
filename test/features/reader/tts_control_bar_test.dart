@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -247,6 +248,155 @@ void main() {
       await tester.tap(find.byTooltip('Play'));
       await tester.pump();
       expect(mockNotifier.playCalled, isTrue);
+    });
+
+    testWidgets('collapses to mini capsule after 3.5s inactivity while playing, and expands on hover', (tester) async {
+      final mockNotifier = MockTtsNotifier(
+        const TtsState(
+          playbackState: TtsPlaybackState.playing,
+          currentSentenceIndex: 2,
+          totalSentences: 10,
+          currentSentenceText: 'This is an active sentence being spoken.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            ttsStateProvider.overrideWith(() => mockNotifier),
+            hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ],
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: Center(
+                  child: TtsControlBar(
+                    onClose: () {},
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      // Initially expanded
+      expect(find.byKey(const ValueKey('tts_expanded_pill')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tts_mini_capsule')), findsNothing);
+
+      // Inactivity of 2 seconds (not yet collapsed)
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.byKey(const ValueKey('tts_expanded_pill')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tts_mini_capsule')), findsNothing);
+
+      // Complete 3.5s threshold + 250ms animation
+      await tester.pump(const Duration(milliseconds: 1600));
+      await tester.pumpAndSettle();
+
+      // Now collapsed into mini capsule
+      expect(find.byKey(const ValueKey('tts_mini_capsule')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tts_expanded_pill')), findsNothing);
+      expect(find.text('3/10'), findsOneWidget);
+
+      // Hover over the mini capsule to trigger expansion
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: Offset.zero);
+      await gesture.moveTo(tester.getCenter(find.byKey(const ValueKey('tts_mini_capsule'))));
+      await tester.pumpAndSettle();
+
+      // Immediately expands back to expanded pill
+      expect(find.byKey(const ValueKey('tts_expanded_pill')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tts_mini_capsule')), findsNothing);
+      expect(find.byTooltip('Previous Sentence'), findsOneWidget);
+
+      await gesture.removePointer();
+    });
+
+    testWidgets('does not collapse when playback is paused or stopped', (tester) async {
+      final mockNotifier = MockTtsNotifier(
+        const TtsState(
+          playbackState: TtsPlaybackState.paused,
+          currentSentenceIndex: 2,
+          totalSentences: 10,
+        ),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            ttsStateProvider.overrideWith(() => mockNotifier),
+            hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ],
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: Center(
+                  child: TtsControlBar(
+                    onClose: () {},
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      // Initially expanded
+      expect(find.byKey(const ValueKey('tts_expanded_pill')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tts_mini_capsule')), findsNothing);
+
+      // Wait 5 seconds
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+
+      // Still expanded because playback is paused
+      expect(find.byKey(const ValueKey('tts_expanded_pill')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tts_mini_capsule')), findsNothing);
+    });
+
+    testWidgets('tapping mini capsule play/pause button toggles playback and expands', (tester) async {
+      final mockNotifier = MockTtsNotifier(
+        const TtsState(
+          playbackState: TtsPlaybackState.playing,
+          totalSentences: 5,
+        ),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            ttsStateProvider.overrideWith(() => mockNotifier),
+            hasInstalledTtsModelsProvider.overrideWithValue(true),
+          ],
+          child: ReaderTheme(
+            data: ReaderThemeTokens.fromPreset(ReaderThemePreset.paper),
+            child: MaterialApp(
+              home: Scaffold(
+                body: Center(
+                  child: TtsControlBar(
+                    onClose: () {},
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      // Wait for collapse
+      await tester.pump(const Duration(milliseconds: 3600));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('tts_mini_capsule')), findsOneWidget);
+
+      // Tap compact pause button
+      await tester.tap(find.byKey(const ValueKey('tts_mini_play_pause')));
+      await tester.pumpAndSettle();
+
+      expect(mockNotifier.pauseCalled, isTrue);
+      // Expands back to full pill
+      expect(find.byKey(const ValueKey('tts_expanded_pill')), findsOneWidget);
     });
   });
 }

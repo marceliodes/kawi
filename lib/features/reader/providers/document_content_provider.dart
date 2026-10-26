@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/painting.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 import '../services/chapter_paginator.dart';
 import '../services/document_extractor.dart';
@@ -154,6 +155,7 @@ class PaginationParams {
     required this.maxHeight,
     required this.textStyle,
     required this.paragraphSpacing,
+    this.bottomHeadroom = EpubPaginationMetrics.bottomHeadroom,
   });
 
   final String filePath;
@@ -162,6 +164,7 @@ class PaginationParams {
   final double maxHeight;
   final TextStyle textStyle;
   final double paragraphSpacing;
+  final double bottomHeadroom;
 
   @override
   bool operator ==(Object other) =>
@@ -173,7 +176,8 @@ class PaginationParams {
           maxWidth == other.maxWidth &&
           maxHeight == other.maxHeight &&
           textStyle == other.textStyle &&
-          paragraphSpacing == other.paragraphSpacing;
+          paragraphSpacing == other.paragraphSpacing &&
+          bottomHeadroom == other.bottomHeadroom;
 
   @override
   int get hashCode => Object.hash(
@@ -183,6 +187,7 @@ class PaginationParams {
         maxHeight,
         textStyle,
         paragraphSpacing,
+        bottomHeadroom,
       );
 }
 
@@ -206,6 +211,7 @@ final chapterPagesProvider =
     textStyle: params.textStyle,
     paragraphSpacing: params.paragraphSpacing,
     chapterIndex: params.chapterIndex,
+    bottomHeadroom: params.bottomHeadroom,
   );
 });
 

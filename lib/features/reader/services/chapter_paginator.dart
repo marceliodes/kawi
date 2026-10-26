@@ -11,6 +11,9 @@ import '../models/document_models.dart';
 class ChapterPaginator {
   const ChapterPaginator._();
 
+  /// Reserved bottom headroom for zero-reflow footer and floating overlays (consistently 72.0 px).
+  static const double bottomHeadroom = EpubPaginationMetrics.bottomHeadroom;
+
   /// Paginates [nodes] into a sequential list of [PageChunk]s that fit within [maxHeight].
   static List<PageChunk> paginate({
     required List<DocumentNode> nodes,
@@ -20,6 +23,7 @@ class ChapterPaginator {
     required double paragraphSpacing,
     int chapterIndex = 0,
     double safetyBuffer = 12.0,
+    double bottomHeadroom = EpubPaginationMetrics.bottomHeadroom,
   }) {
     if (nodes.isEmpty || maxWidth <= 0 || maxHeight <= 0) {
       return [
@@ -40,7 +44,11 @@ class ChapterPaginator {
     final lineHeight =
         (textStyle.fontSize ?? 16.0) * (textStyle.height ?? 1.5);
     final nodeHeadroomSlack = (lineHeight * 0.85).clamp(18.0, 26.0);
-    final usableHeight = maxHeight;
+    final effectiveBottomHeadroom =
+        (maxHeight >= bottomHeadroom + (lineHeight * 2)) ? bottomHeadroom : 0.0;
+    final usableHeight = (maxHeight - effectiveBottomHeadroom) > 0
+        ? maxHeight - effectiveBottomHeadroom
+        : maxHeight;
     var remainingHeight = usableHeight;
 
     var pageStartNodeIndex = 0;

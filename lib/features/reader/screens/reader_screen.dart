@@ -1071,6 +1071,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
                             _startTts(fromSentence: sentence);
                           },
                           onToggleTts: _toggleTtsPlayback,
+                          isTtsBarVisible: _isTtsBarVisible,
                           epubChunks: epubChunks,
                           epubNodes: settings.isPaginated ? null : epubNodes,
                           isEpub: isEpub,

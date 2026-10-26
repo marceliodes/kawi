@@ -587,6 +587,7 @@ void main() {
         maxHeight: maxHeight,
         textStyle: textStyle,
         paragraphSpacing: paragraphSpacing,
+        bottomHeadroom: 0.0,
       );
       expect(pages.length, 2);
       expect(pages[0].nodes.length, 1);

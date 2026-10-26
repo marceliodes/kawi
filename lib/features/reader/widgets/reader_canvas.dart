@@ -52,6 +52,7 @@ class ReaderCanvas extends ConsumerStatefulWidget {
     this.onUserNavigated,
     this.onSpeakingPageDiscovered,
     this.onToggleTts,
+    this.isTtsBarVisible = false,
   });
 
   final String filePath;
@@ -68,6 +69,7 @@ class ReaderCanvas extends ConsumerStatefulWidget {
   final VoidCallback onToggleChrome;
   final ValueChanged<String>? onPlayFromHere;
   final VoidCallback? onToggleTts;
+  final bool isTtsBarVisible;
 
   // EPUB Reflow Engine integration properties
   final List<PageChunk>? epubChunks;
@@ -2145,6 +2147,36 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
             ),
           ),
         ),
+
+        // Default Page Progress Footer in Paginated Mode (smoothly cross-fades when TTS transport bar is visible)
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: EpubPaginationMetrics.bottomHeadroom,
+          child: AnimatedOpacity(
+            opacity: (widget.isTtsBarVisible ||
+                    ref.watch(ttsStateProvider.select((s) => s.isPlaying)))
+                ? 0.0
+                : 1.0,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeInOutCubic,
+            child: IgnorePointer(
+              ignoring: widget.isTtsBarVisible ||
+                  ref.watch(ttsStateProvider.select((s) => s.isPlaying)),
+              child: Center(
+                child: Text(
+                  '${_currentPageIndexInChapter + 1} / ${pages.length}',
+                  key: const ValueKey('paginated_page_progress_footer'),
+                  style: AppTypography.micro.copyWith(
+                    color: theme.textMuted,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -2197,9 +2229,11 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         itemPositionsListener: _effectiveItemPositionsListener,
         initialScrollIndex: initialIndex,
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.symmetric(
-          horizontal: horizontalPadding,
-          vertical: Spacing.xl + 40.0,
+        padding: EdgeInsets.only(
+          left: horizontalPadding,
+          right: horizontalPadding,
+          top: Spacing.xl + 40.0,
+          bottom: 96.0,
         ),
         itemCount: totalChapters,
         itemBuilder: (context, chapterIdx) {
@@ -2374,6 +2408,36 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                   PhosphorIconsLight.caretRight,
                   size: 24,
                   color: theme.textMuted.withValues(alpha: 0.4),
+                ),
+              ),
+            ),
+          ),
+        ),
+
+        // Default Page Progress Footer for PDF/paginated mode (smoothly cross-fades when TTS transport bar is visible)
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: EpubPaginationMetrics.bottomHeadroom,
+          child: AnimatedOpacity(
+            opacity: (widget.isTtsBarVisible ||
+                    ref.watch(ttsStateProvider.select((s) => s.isPlaying)))
+                ? 0.0
+                : 1.0,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeInOutCubic,
+            child: IgnorePointer(
+              ignoring: widget.isTtsBarVisible ||
+                  ref.watch(ttsStateProvider.select((s) => s.isPlaying)),
+              child: Center(
+                child: Text(
+                  '${(_safeGetPage(widget.pageController)?.round() ?? widget.initialPageIndex) + 1} / $effectivePageCount',
+                  key: const ValueKey('pdf_paginated_page_progress_footer'),
+                  style: AppTypography.micro.copyWith(
+                    color: theme.textMuted,
+                    letterSpacing: 0.5,
+                  ),
                 ),
               ),
             ),
@@ -3097,15 +3161,18 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
     }
 
     // Dead-zone check:
-    // Only scroll if nearing lower threshold (>60% of viewport, or bottom > viewport - 80),
+    // Only scroll if nearing lower threshold (or bottom > viewport - 96.0),
     // or off-screen top (< 70px)
-    final bool isNearBottom = sentenceDy > viewportHeight * 0.60 ||
-        sentenceBottomDy > viewportHeight - 80.0;
+    const double bottomInset = 96.0;
+    final double effectiveViewportHeight =
+        (viewportHeight - bottomInset).clamp(100.0, viewportHeight);
+    final bool isNearBottom = sentenceDy > effectiveViewportHeight * 0.65 ||
+        sentenceBottomDy > viewportHeight - bottomInset;
     final bool isOffscreenTop = sentenceDy < 70.0;
 
     if (force || isNearBottom || isOffscreenTop) {
-      // Bring active sentence into upper-middle third (around 35% from the top):
-      final targetDyInViewport = viewportHeight * 0.35;
+      // Bring active sentence into upper-middle third (around 35% from the top of effective viewport):
+      final targetDyInViewport = effectiveViewportHeight * 0.35;
       final scrollDelta = sentenceDy - targetDyInViewport;
       final targetOffset = (scrollable.position.pixels + scrollDelta).clamp(
         scrollable.position.minScrollExtent,

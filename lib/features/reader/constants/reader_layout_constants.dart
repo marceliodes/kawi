@@ -14,6 +14,9 @@ abstract final class EpubPaginationMetrics {
   /// Spacing between paragraphs.
   static const double paragraphSpacing = 16.0;
 
+  /// Reserved bottom headroom for zero-reflow footer and floating overlays (e.g. TTS bar).
+  static const double bottomHeadroom = 72.0;
+
   /// Total vertical chrome subtracted from the viewport constraints to get the content height:
   /// top padding (64.0) + bottom padding (24.0) + page header row height (32.0) = 120.0px.
   static const double verticalChromeHeight =
