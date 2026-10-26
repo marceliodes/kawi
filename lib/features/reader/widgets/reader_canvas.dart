@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:clock/clock.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
@@ -337,7 +338,39 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
   bool _isProgrammaticNavigation = false;
   bool _isProgrammaticReanchoring = false;
+  bool _isUserScrolling = false;
+  Timer? _userScrollDebounceTimer;
+  Timer? _continuousAnchorDebounceTimer;
+  ReadingAnchor? _pendingContinuousScrollAnchor;
+  int _lastSentenceIndexDuringUserScroll = -1;
   Timer? _prewarmTimer;
+
+  void _onUserScrollStarted() {
+    _isUserScrolling = true;
+    _userScrollDebounceTimer?.cancel();
+    final ttsState = ref.read(ttsStateProvider);
+    _lastSentenceIndexDuringUserScroll = ttsState.currentSentenceIndex;
+  }
+
+  void _scheduleUserScrollEnded() {
+    _userScrollDebounceTimer?.cancel();
+    _userScrollDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        _isUserScrolling = false;
+      }
+    });
+  }
+
+  void _onUserScrollEnded() {
+    _scheduleUserScrollEnded();
+  }
+
+  bool get isAutoScrollSuspendedByUser {
+    if (_isUserScrolling) return true;
+    final ttsState = ref.read(ttsStateProvider);
+    return _lastSentenceIndexDuringUserScroll != -1 &&
+        _lastSentenceIndexDuringUserScroll == ttsState.currentSentenceIndex;
+  }
 
   ItemScrollController get _effectiveItemScrollController =>
       widget.itemScrollController ??
@@ -364,10 +397,223 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
   void _registerNodeState(_EpubScopedNodeWidgetState state) {
     _activeNodeStates.add(state);
+    if (_pendingContinuousScrollAnchor != null &&
+        state.widget.chapterIndex == _pendingContinuousScrollAnchor!.chapterIndex &&
+        state.widget.paragraphIndex == _pendingContinuousScrollAnchor!.paragraphIndex) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _pendingContinuousScrollAnchor != null) {
+          final scrolled = _scrollToAnchorNode(_pendingContinuousScrollAnchor!);
+          if (scrolled) {
+            _pendingContinuousScrollAnchor = null;
+          }
+        }
+      });
+    }
   }
 
   void _unregisterNodeState(_EpubScopedNodeWidgetState state) {
     _activeNodeStates.remove(state);
+  }
+
+  bool _scrollToAnchorNode(ReadingAnchor anchor, {bool jump = true}) {
+    if (!mounted) return false;
+
+    _EpubScopedNodeWidgetState? targetState;
+    for (final state in _activeNodeStates) {
+      if (!state.mounted) continue;
+      if (state.widget.chapterIndex == anchor.chapterIndex &&
+          state.widget.paragraphIndex == anchor.paragraphIndex) {
+        targetState = state;
+        break;
+      }
+    }
+
+    if (targetState == null) return false;
+
+    final box = targetState.context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return false;
+
+    final scrollable = Scrollable.maybeOf(targetState.context);
+    if (scrollable == null || !scrollable.position.hasPixels) return false;
+
+    final scrollableBox = scrollable.context.findRenderObject() as RenderBox?;
+    if (scrollableBox == null || !scrollableBox.hasSize) return false;
+
+    final localTopLeft =
+        scrollableBox.globalToLocal(box.localToGlobal(Offset.zero));
+    double nodeDy = localTopLeft.dy;
+    final double nodeHeight = box.size.height;
+    final text = targetState.widget.node.toPlainText();
+
+    if (text.isNotEmpty && anchor.charOffset > 0 && nodeHeight > 0) {
+      final fraction = (anchor.charOffset / text.length).clamp(0.0, 1.0);
+      nodeDy += nodeHeight * fraction;
+    }
+
+    const readingLine = 80.0;
+    final scrollDelta = nodeDy - readingLine;
+    final targetOffset = (scrollable.position.pixels + scrollDelta).clamp(
+      scrollable.position.minScrollExtent,
+      scrollable.position.maxScrollExtent,
+    );
+
+    _isProgrammaticNavigation = true;
+    _isProgrammaticReanchoring = true;
+
+    if (jump || (targetOffset - scrollable.position.pixels).abs() < 1.0) {
+      scrollable.position.jumpTo(targetOffset);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _isProgrammaticNavigation = false;
+          _isProgrammaticReanchoring = false;
+        }
+      });
+    } else {
+      scrollable.position.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOutCubic,
+      ).then((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _isProgrammaticNavigation = false;
+            _isProgrammaticReanchoring = false;
+          }
+        });
+      }).catchError((_) {
+        if (mounted) {
+          _isProgrammaticNavigation = false;
+          _isProgrammaticReanchoring = false;
+        }
+      });
+    }
+
+    return true;
+  }
+
+  ReadingAnchor? computeLeadingContinuousAnchor() {
+    if (_activeNodeStates.isEmpty) return null;
+
+    RenderBox? scrollableBox;
+    for (final state in _activeNodeStates) {
+      if (!state.mounted) continue;
+      final s = Scrollable.maybeOf(state.context);
+      final sb = s?.context.findRenderObject() as RenderBox?;
+      if (sb != null && sb.hasSize) {
+        scrollableBox = sb;
+        break;
+      }
+    }
+    if (scrollableBox == null) return null;
+
+    const readingLine = 80.0;
+    final candidates = <({
+      _EpubScopedNodeWidgetState state,
+      double dy,
+      double bottomDy,
+      int chapterIndex,
+      int paragraphIndex,
+    })>[];
+
+    for (final state in _activeNodeStates) {
+      if (!state.mounted) continue;
+      final ch = state.widget.chapterIndex;
+      final p = state.widget.paragraphIndex;
+      if (ch == null || p == null) continue;
+
+      final box = state.context.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) continue;
+
+      try {
+        final localTopLeft =
+            scrollableBox.globalToLocal(box.localToGlobal(Offset.zero));
+        final dy = localTopLeft.dy;
+        final bottomDy = dy + box.size.height;
+        if (bottomDy > 0.0) {
+          candidates.add((
+            state: state,
+            dy: dy,
+            bottomDy: bottomDy,
+            chapterIndex: ch,
+            paragraphIndex: p,
+          ));
+        }
+      } catch (_) {}
+    }
+
+    if (candidates.isEmpty) return null;
+
+    candidates.sort((a, b) {
+      final chCmp = a.chapterIndex.compareTo(b.chapterIndex);
+      if (chCmp != 0) return chCmp;
+      return a.paragraphIndex.compareTo(b.paragraphIndex);
+    });
+
+    final straddling = candidates.where(
+      (c) => c.dy <= readingLine && c.bottomDy > readingLine,
+    ).toList();
+
+    final active = straddling.isNotEmpty
+        ? straddling.first
+        : candidates.firstWhere(
+            (c) => c.dy >= readingLine,
+            orElse: () => candidates.last,
+          );
+
+    final nodeHeight = active.bottomDy - active.dy;
+    final text = active.state.widget.node.toPlainText();
+    int charOffset = 0;
+    if (text.isNotEmpty && nodeHeight > 0 && active.dy < readingLine) {
+      final hiddenAboveReadingLine = readingLine - active.dy;
+      final fraction = (hiddenAboveReadingLine / nodeHeight).clamp(0.0, 1.0);
+      charOffset = (fraction * text.length).round().clamp(0, text.length);
+    }
+
+    return ReadingAnchor(
+      chapterIndex: active.chapterIndex,
+      paragraphIndex: active.paragraphIndex,
+      charOffset: charOffset,
+    );
+  }
+
+  void _recordLeadingVisibleContinuousAnchor() {
+    if (!mounted || widget.settings.isPaginated) return;
+    if (_isProgrammaticNavigation || _isProgrammaticReanchoring) return;
+
+    final anchor = computeLeadingContinuousAnchor();
+    if (anchor != null) {
+      if (_currentChapterIndex != anchor.chapterIndex) {
+        _currentChapterIndex = anchor.chapterIndex;
+        _schedulePrewarmAdjacentChapters();
+        widget.onChapterChanged?.call(anchor.chapterIndex);
+        widget.onPageChanged(anchor.chapterIndex, 0.0);
+      }
+      ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+            chapterIndex: anchor.chapterIndex,
+            paragraphIndex: anchor.paragraphIndex,
+            charOffset: anchor.charOffset,
+          );
+    }
+  }
+
+  void _scheduleContinuousAnchorDebounce() {
+    _continuousAnchorDebounceTimer?.cancel();
+    _continuousAnchorDebounceTimer =
+        Timer(const Duration(milliseconds: 200), () {
+      if (mounted) {
+        _recordLeadingVisibleContinuousAnchor();
+      }
+    });
+  }
+
+  void _scheduleContinuousAnchorCommit() {
+    _continuousAnchorDebounceTimer?.cancel();
+    _continuousAnchorDebounceTimer =
+        Timer(const Duration(milliseconds: 50), () {
+      if (mounted) {
+        _recordLeadingVisibleContinuousAnchor();
+      }
+    });
   }
 
   /// Returns the first visible sentence or text snippet on screen for TTS initialization.
@@ -489,12 +735,44 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   @override
   void initState() {
     super.initState();
-    _currentChapterIndex = widget.initialChapterIndex ??
-        widget.chapterIndex ??
-        widget.initialPageIndex.clamp(
-          0,
-          widget.pageCount > 0 ? widget.pageCount - 1 : 0,
-        );
+    final anchor = ref.read(activeReadingAnchorProvider);
+    if (anchor != null) {
+      _currentChapterIndex = anchor.chapterIndex;
+      if (!widget.settings.isPaginated) {
+        _pendingContinuousScrollAnchor = anchor;
+        _isProgrammaticReanchoring = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (_pendingContinuousScrollAnchor != null) {
+            final scrolled =
+                _scrollToAnchorNode(_pendingContinuousScrollAnchor!);
+            if (scrolled) {
+              _pendingContinuousScrollAnchor = null;
+            } else {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && _pendingContinuousScrollAnchor != null) {
+                  final secondAttempt =
+                      _scrollToAnchorNode(_pendingContinuousScrollAnchor!);
+                  _pendingContinuousScrollAnchor = null;
+                  if (!secondAttempt) {
+                    _isProgrammaticReanchoring = false;
+                  }
+                }
+              });
+            }
+          } else {
+            _isProgrammaticReanchoring = false;
+          }
+        });
+      }
+    } else {
+      _currentChapterIndex = widget.initialChapterIndex ??
+          widget.chapterIndex ??
+          widget.initialPageIndex.clamp(
+            0,
+            widget.pageCount > 0 ? widget.pageCount - 1 : 0,
+          );
+    }
     _currentPageIndexInChapter = widget.pageIndexInChapter ?? 0;
 
     if (_isEpub) {
@@ -633,19 +911,66 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     }
 
     if (!oldWidget.settings.isPaginated && widget.settings.isPaginated) {
+      _isProgrammaticReanchoring = true;
+      final anchor = ref.read(activeReadingAnchorProvider);
+      if (anchor != null) {
+        _currentChapterIndex = anchor.chapterIndex;
+        _paginatedChapterIndex = null;
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           if (_isEpub && _isEpubPageControllerReady) {
-            _epubPageController!.jumpToPage(_currentPageIndexInChapter);
+            final pages = _effectivePages;
+            final resolved = ref
+                .read(activeReadingAnchorProvider.notifier)
+                .resolvePageForCurrentAnchor(pages);
+            _currentPageIndexInChapter = resolved;
+            final curPage = _safeGetPage(_effectiveEpubPageController);
+            if (curPage?.round() != resolved) {
+              _isProgrammaticReanchoring = true;
+              _effectiveEpubPageController.jumpToPage(resolved);
+            }
           } else if (!_isEpub && _isPageControllerReady) {
             widget.pageController.jumpToPage(_currentPageIndexInChapter);
           }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _isProgrammaticReanchoring = false;
+            }
+          });
         }
       });
     } else if (oldWidget.settings.isPaginated && !widget.settings.isPaginated) {
+      _isProgrammaticReanchoring = true;
+      final anchor = ref.read(activeReadingAnchorProvider);
+      if (anchor != null) {
+        _currentChapterIndex = anchor.chapterIndex;
+        _pendingContinuousScrollAnchor = anchor;
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _effectiveItemScrollController.isAttached) {
+        if (!mounted) return;
+        if (_effectiveItemScrollController.isAttached) {
           _effectiveItemScrollController.jumpTo(index: _currentChapterIndex);
+        }
+        if (_pendingContinuousScrollAnchor != null) {
+          final scrolled =
+              _scrollToAnchorNode(_pendingContinuousScrollAnchor!);
+          if (scrolled) {
+            _pendingContinuousScrollAnchor = null;
+          } else {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && _pendingContinuousScrollAnchor != null) {
+                final secondAttempt =
+                    _scrollToAnchorNode(_pendingContinuousScrollAnchor!);
+                _pendingContinuousScrollAnchor = null;
+                if (!secondAttempt) {
+                  _isProgrammaticReanchoring = false;
+                }
+              }
+            });
+          }
+        } else {
+          _isProgrammaticReanchoring = false;
         }
       });
     }
@@ -660,6 +985,8 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   @override
   void dispose() {
     _prewarmTimer?.cancel();
+    _userScrollDebounceTimer?.cancel();
+    _continuousAnchorDebounceTimer?.cancel();
     _oldControllerDisposalTimer?.cancel();
     _pendingDisposalController?.dispose();
     _pendingDisposalController = null;
@@ -768,12 +1095,34 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         });
       }
     } else {
-      if (_effectiveItemScrollController.isAttached) {
+      _isUserScrolling = false;
+      _lastSentenceIndexDuringUserScroll = -1;
+      _userScrollDebounceTimer?.cancel();
+
+      final ttsState = ref.read(ttsStateProvider);
+      final activeSentence = ttsState.currentSentenceText.trim();
+      _EpubScopedNodeWidgetState? matchedState;
+      if (activeSentence.isNotEmpty) {
+        for (final nodeState in _activeNodeStates) {
+          if (!nodeState.mounted) continue;
+          final plain = nodeState.widget.node.toPlainText().trim();
+          if (plain.contains(activeSentence) ||
+              plain.replaceAll(RegExp(r'\s+'), ' ').toLowerCase().contains(
+                  activeSentence.replaceAll(RegExp(r'\s+'), ' ').toLowerCase())) {
+            matchedState = nodeState;
+            break;
+          }
+        }
+      }
+
+      if (matchedState != null) {
+        matchedState.scrollNodeIntoView(force: true);
+      } else if (_effectiveItemScrollController.isAttached) {
         _isProgrammaticNavigation = true;
         _effectiveItemScrollController.scrollTo(
           index: _currentChapterIndex,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeInOut,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeInOutCubic,
         ).then((_) {
           _isProgrammaticNavigation = false;
         });
@@ -1113,9 +1462,16 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
     // Auto-turn check on TTS progress in paginated mode without full rebuild
     ref.listen<TtsState>(ttsStateProvider, (previous, next) {
-      if (next.isPlaying && widget.settings.isPaginated) {
-        final pages = _effectivePages;
-        _checkAutoPageTurn(pages, next);
+      if (next.isPlaying) {
+        if (next.currentSentenceIndex != previous?.currentSentenceIndex) {
+          if (!_isUserScrolling) {
+            _lastSentenceIndexDuringUserScroll = -1;
+          }
+        }
+        if (widget.settings.isPaginated) {
+          final pages = _effectivePages;
+          _checkAutoPageTurn(pages, next);
+        }
       }
     });
 
@@ -1124,7 +1480,12 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       onPointerSignal: (event) {
         if (event is PointerScrollEvent) {
           if (event.scrollDelta.dy.abs() > 1.0) {
-            widget.onUserNavigated?.call();
+            if (!widget.settings.isPaginated) {
+              _onUserScrollStarted();
+              _scheduleUserScrollEnded();
+            } else {
+              widget.onUserNavigated?.call();
+            }
           }
           if (widget.settings.isPaginated && event.scrollDelta.dx != 0) {
             _handleTrackpadDelta(event.scrollDelta.dx);
@@ -1152,7 +1513,12 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       },
       onPointerMove: (event) {
         if (event.buttons != 0 || event.kind == PointerDeviceKind.touch) {
-          widget.onUserNavigated?.call();
+          if (!widget.settings.isPaginated) {
+            _onUserScrollStarted();
+            _scheduleUserScrollEnded();
+          } else {
+            widget.onUserNavigated?.call();
+          }
         }
       },
       child: Focus(
@@ -1350,10 +1716,21 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         _currentPageIndexInChapter = pages.isNotEmpty ? pages.length - 1 : 0;
         _lastPageSentinelConsumedForChapter = _currentChapterIndex;
       } else {
-        _currentPageIndexInChapter = _currentPageIndexInChapter.clamp(
-          0,
-          pages.isNotEmpty ? pages.length - 1 : 0,
-        );
+        final anchor = ref.read(activeReadingAnchorProvider);
+        int resolvedAnchorPage = -1;
+        if (anchor != null && anchor.chapterIndex == _currentChapterIndex) {
+          resolvedAnchorPage = ref
+              .read(activeReadingAnchorProvider.notifier)
+              .resolvePageForCurrentAnchor(pages);
+        }
+        if (resolvedAnchorPage >= 0 && resolvedAnchorPage < pages.length) {
+          _currentPageIndexInChapter = resolvedAnchorPage;
+        } else {
+          _currentPageIndexInChapter = _currentPageIndexInChapter.clamp(
+            0,
+            pages.isNotEmpty ? pages.length - 1 : 0,
+          );
+        }
       }
 
       if (_shouldUseInternalEpubPageController) {
@@ -1370,13 +1747,17 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         widget.onEpubPageChanged?.call(_currentChapterIndex, targetPage);
-        if (targetPage < pages.length) {
-          final chunk = pages[targetPage];
-          ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
-                chapterIndex: _currentChapterIndex,
-                paragraphIndex: chunk.startParagraphIndex,
-                charOffset: chunk.startCharOffset,
-              );
+        final currentAnchor = ref.read(activeReadingAnchorProvider);
+        if (currentAnchor == null ||
+            currentAnchor.chapterIndex != _currentChapterIndex) {
+          if (targetPage < pages.length) {
+            final chunk = pages[targetPage];
+            ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+                  chapterIndex: _currentChapterIndex,
+                  paragraphIndex: chunk.startParagraphIndex,
+                  charOffset: chunk.startCharOffset,
+                );
+          }
         }
       });
     } else {
@@ -1624,34 +2005,62 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       color: theme.textPrimary,
     );
 
-    return ScrollablePositionedList.builder(
-      itemScrollController: _effectiveItemScrollController,
-      itemPositionsListener: _effectiveItemPositionsListener,
-      initialScrollIndex: initialIndex,
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: EdgeInsets.symmetric(
-        horizontal: horizontalPadding,
-        vertical: Spacing.xl + 40.0,
-      ),
-      itemCount: totalChapters,
-      itemBuilder: (context, chapterIdx) {
-        return _ContinuousChapterSectionWidget(
-          filePath: widget.filePath,
-          chapterIndex: chapterIdx,
-          initialNodes: (chapterIdx == widget.chapterIndex &&
-                  widget.epubNodes != null &&
-                  widget.epubNodes!.isNotEmpty)
-              ? widget.epubNodes
-              : null,
-          columnWidth: columnWidth,
-          columnHeight: columnHeight,
-          theme: theme,
-          baseStyle: baseStyle,
-          onPlayFromHere: widget.onPlayFromHere,
-          isUserDesynced: widget.isUserDesyncedFromTts,
-          onProgrammaticScroll: _setProgrammaticScroll,
-        );
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (!_isProgrammaticNavigation && !_isProgrammaticReanchoring) {
+          if (notification is ScrollStartNotification) {
+            if (notification.dragDetails != null) {
+              _onUserScrollStarted();
+            }
+          } else if (notification is ScrollUpdateNotification) {
+            if (notification.dragDetails != null) {
+              _onUserScrollStarted();
+              _scheduleUserScrollEnded();
+            }
+            _scheduleContinuousAnchorDebounce();
+          } else if (notification is ScrollEndNotification) {
+            _onUserScrollEnded();
+            _scheduleContinuousAnchorCommit();
+          } else if (notification is UserScrollNotification) {
+            if (notification.direction != ScrollDirection.idle) {
+              _onUserScrollStarted();
+            } else {
+              _onUserScrollEnded();
+              _scheduleContinuousAnchorCommit();
+            }
+          }
+        }
+        return false;
       },
+      child: ScrollablePositionedList.builder(
+        itemScrollController: _effectiveItemScrollController,
+        itemPositionsListener: _effectiveItemPositionsListener,
+        initialScrollIndex: initialIndex,
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.symmetric(
+          horizontal: horizontalPadding,
+          vertical: Spacing.xl + 40.0,
+        ),
+        itemCount: totalChapters,
+        itemBuilder: (context, chapterIdx) {
+          return _ContinuousChapterSectionWidget(
+            filePath: widget.filePath,
+            chapterIndex: chapterIdx,
+            initialNodes: (chapterIdx == widget.chapterIndex &&
+                    widget.epubNodes != null &&
+                    widget.epubNodes!.isNotEmpty)
+                ? widget.epubNodes
+                : null,
+            columnWidth: columnWidth,
+            columnHeight: columnHeight,
+            theme: theme,
+            baseStyle: baseStyle,
+            onPlayFromHere: widget.onPlayFromHere,
+            isUserDesynced: widget.isUserDesyncedFromTts,
+            onProgrammaticScroll: _setProgrammaticScroll,
+          );
+        },
+      ),
     );
   }
 
@@ -1660,10 +2069,12 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     TextStyle baseStyle,
     ReaderThemeData theme, {
     double? viewportHeight,
+    int? paragraphIndex,
   }) {
     return _EpubScopedNodeWidget(
       node: node,
       chapterIndex: _currentChapterIndex,
+      paragraphIndex: paragraphIndex,
       baseStyle: baseStyle,
       theme: theme,
       viewportHeight: viewportHeight,
@@ -2310,12 +2721,13 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final node in nodes)
+                for (var i = 0; i < nodes.length; i++)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16.0),
                     child: _EpubScopedNodeWidget(
-                      node: node,
+                      node: nodes[i],
                       chapterIndex: chapterIndex,
+                      paragraphIndex: i,
                       baseStyle: baseStyle,
                       theme: theme,
                       viewportHeight: columnHeight,
@@ -2328,7 +2740,7 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
                         editableTextState,
                         theme,
                         onPlayFromHere: onPlayFromHere,
-                        nodeText: node.toPlainText(),
+                        nodeText: nodes[i].toPlainText(),
                       ),
                     ),
                   ),
@@ -2423,6 +2835,7 @@ List<InlineSpan> _buildDefaultSpans(DocumentNode node, TextStyle textStyle) {
 class _EpubScopedNodeWidget extends ConsumerStatefulWidget {
   final DocumentNode node;
   final int? chapterIndex;
+  final int? paragraphIndex;
   final TextStyle baseStyle;
   final ReaderThemeData theme;
   final double? viewportHeight;
@@ -2434,6 +2847,7 @@ class _EpubScopedNodeWidget extends ConsumerStatefulWidget {
   const _EpubScopedNodeWidget({
     required this.node,
     this.chapterIndex,
+    this.paragraphIndex,
     required this.baseStyle,
     required this.theme,
     this.viewportHeight,
@@ -2471,91 +2885,86 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
     super.dispose();
   }
 
-  void _scrollToFollowHighlight() {
+  void scrollNodeIntoView({bool force = false}) {
     final readerSettings = ref.read(readerSettingsProvider);
-    if (!mounted || widget.isUserDesynced || !widget.isContinuous || !readerSettings.ttsAutoAdvance) return;
+    if (!mounted || !widget.isContinuous || !readerSettings.ttsAutoAdvance) return;
+    if (widget.isUserDesynced) return;
+    if (!force && _parentCanvasState?.isAutoScrollSuspendedByUser == true) return;
 
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
 
-    final viewportHeight = MediaQuery.maybeOf(context)?.size.height ??
-        widget.viewportHeight ??
-        800.0;
+    final scrollable = Scrollable.maybeOf(context);
+    if (scrollable == null || !scrollable.position.hasPixels) return;
 
-    double dy;
-    try {
-      dy = box.localToGlobal(Offset.zero).dy;
-    } catch (_) {
-      return;
-    }
-    final bottomDy = dy + box.size.height;
+    final scrollableBox = scrollable.context.findRenderObject() as RenderBox?;
+    if (scrollableBox == null || !scrollableBox.hasSize) return;
 
-    // Calculate the approximate vertical offset of the active sentence within this node
+    // Viewport-relative coordinates (immune to chrome / window positioning):
+    final localTopLeft =
+        scrollableBox.globalToLocal(box.localToGlobal(Offset.zero));
+    final double nodeDy = localTopLeft.dy;
+    final double nodeHeight = box.size.height;
+    final double viewportHeight = scrollableBox.size.height;
+
+    // Approximate vertical offset of the active sentence within this node:
     final ttsState = ref.read(ttsStateProvider);
     final paragraphText = widget.node.toPlainText();
     final activeSentence = ttsState.currentSentenceText.trim();
 
-    double sentenceDy = dy;
-    double sentenceBottomDy = bottomDy;
+    double sentenceDy = nodeDy;
+    double sentenceBottomDy = nodeDy + nodeHeight;
     if (paragraphText.isNotEmpty && activeSentence.isNotEmpty) {
       final idx = paragraphText.indexOf(activeSentence);
       if (idx >= 0) {
         final fraction = idx / paragraphText.length;
         final lenFraction =
             (activeSentence.length / paragraphText.length).clamp(0.05, 1.0);
-        sentenceDy = dy + (box.size.height * fraction);
-        sentenceBottomDy = sentenceDy + (box.size.height * lenFraction);
+        sentenceDy = nodeDy + (nodeHeight * fraction);
+        sentenceBottomDy = sentenceDy + (nodeHeight * lenFraction);
       }
     }
 
-    if (sentenceDy > viewportHeight * 0.65 ||
-        sentenceBottomDy > viewportHeight - 80 ||
-        sentenceDy < 70) {
-      final scrollable = Scrollable.maybeOf(context);
-      if (scrollable != null && scrollable.position.hasPixels) {
-        final targetOffset = (scrollable.position.pixels +
-                (sentenceDy - viewportHeight * 0.30))
-            .clamp(
-          scrollable.position.minScrollExtent,
-          scrollable.position.maxScrollExtent,
-        );
-        AppLogger.d(
-            '>>> [TTS AUTO-SCROLL] Scrolling to matched node (dy: $sentenceDy -> targetOffset:$targetOffset)');
-        widget.onProgrammaticScroll?.call(true);
-        scrollable.position.animateTo(
-          targetOffset,
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeOutCubic,
-        ).then((_) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              widget.onProgrammaticScroll?.call(false);
-            }
-          });
-        }).catchError((_) {
+    // Dead-zone check:
+    // Only scroll if nearing lower threshold (>60% of viewport, or bottom > viewport - 80),
+    // or off-screen top (< 70px)
+    final bool isNearBottom = sentenceDy > viewportHeight * 0.60 ||
+        sentenceBottomDy > viewportHeight - 80.0;
+    final bool isOffscreenTop = sentenceDy < 70.0;
+
+    if (force || isNearBottom || isOffscreenTop) {
+      // Bring active sentence into upper-middle third (around 35% from the top):
+      final targetDyInViewport = viewportHeight * 0.35;
+      final scrollDelta = sentenceDy - targetDyInViewport;
+      final targetOffset = (scrollable.position.pixels + scrollDelta).clamp(
+        scrollable.position.minScrollExtent,
+        scrollable.position.maxScrollExtent,
+      );
+
+      if ((targetOffset - scrollable.position.pixels).abs() < 1.0) return;
+
+      AppLogger.d(
+          '>>> [TTS AUTO-SCROLL] Scrolling to matched node (dy: $sentenceDy -> targetOffset: $targetOffset, clamped: ${scrollable.position.minScrollExtent}..${scrollable.position.maxScrollExtent})');
+
+      widget.onProgrammaticScroll?.call(true);
+      _parentCanvasState?._setProgrammaticScroll(true);
+      scrollable.position.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOutCubic,
+      ).then((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             widget.onProgrammaticScroll?.call(false);
+            _parentCanvasState?._setProgrammaticScroll(false);
           }
         });
-      } else {
-        widget.onProgrammaticScroll?.call(true);
-        Scrollable.ensureVisible(
-          context,
-          alignment: 0.35,
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeOutCubic,
-        ).then((_) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              widget.onProgrammaticScroll?.call(false);
-            }
-          });
-        }).catchError((_) {
-          if (mounted) {
-            widget.onProgrammaticScroll?.call(false);
-          }
-        });
-      }
+      }).catchError((_) {
+        if (mounted) {
+          widget.onProgrammaticScroll?.call(false);
+          _parentCanvasState?._setProgrammaticScroll(false);
+        }
+      });
     }
   }
 
@@ -2614,7 +3023,7 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
         _wasMatched = true;
         _lastSentenceIndex = currentSentenceIndex;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollToFollowHighlight();
+          scrollNodeIntoView();
         });
       }
     } else if (!isMatched) {

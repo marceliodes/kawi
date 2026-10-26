@@ -478,5 +478,205 @@ void main() {
         reason: 'User navigation must update the reading anchor once programmatic re-anchoring finishes',
       );
     });
+
+    testWidgets(
+        'Continuous scrolling updates active reading anchor with leading visible paragraph',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 1000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterNodesProvider.overrideWith(
+            (ref, arg) => Future.value(sampleNodes),
+          ),
+          documentChapterTitleProvider.overrideWith(
+            (ref, arg) => Future.value('Chapter 1'),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container
+          .read(readerSettingsProvider.notifier)
+          .setReadingMode(ReadingMode.continuous);
+
+      await tester.pumpWidget(
+        _createTestApp(container: container, document: testEpubDoc),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final scrollableFinder = find.byType(Scrollable).first;
+      final scrollableState = tester.state<ScrollableState>(scrollableFinder);
+      expect(scrollableState.position.pixels, 0.0);
+
+      // Drag downward to scroll several paragraphs
+      await tester.drag(scrollableFinder, const Offset(0, -600));
+      await tester.pump();
+      // Advance past the 200ms debounce window explicitly
+      await tester.pump(const Duration(milliseconds: 300));
+      // Allow any settle frames
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(scrollableState.position.pixels, greaterThan(200.0));
+
+      final updatedAnchor = container.read(activeReadingAnchorProvider);
+      expect(updatedAnchor, isNotNull);
+      expect(
+        updatedAnchor!.paragraphIndex,
+        greaterThan(0),
+        reason:
+            'Scrolling in continuous mode must update the active anchor paragraph',
+      );
+
+      // Clean up any remaining animations or timers
+      await tester.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets(
+        'Switching from paginated mode at a deep page to continuous mode preserves reading anchor and aligns continuous view',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 1000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterNodesProvider.overrideWith(
+            (ref, arg) => Future.value(sampleNodes),
+          ),
+          documentChapterTitleProvider.overrideWith(
+            (ref, arg) => Future.value('Chapter 1'),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container
+          .read(readerSettingsProvider.notifier)
+          .setReadingMode(ReadingMode.paginated);
+
+      await tester.pumpWidget(
+        _createTestApp(container: container, document: testEpubDoc),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final canvasState =
+          tester.state<ReaderCanvasState>(find.byType(ReaderCanvas));
+
+      // Navigate deep into the chapter
+      canvasState.jumpToPageInChapter(8);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final anchorBefore = container.read(activeReadingAnchorProvider);
+      expect(anchorBefore, isNotNull);
+      expect(anchorBefore!.paragraphIndex, greaterThan(0));
+
+      // Switch mode to Continuous
+      await container
+          .read(readerSettingsProvider.notifier)
+          .setReadingMode(ReadingMode.continuous);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      // Continuous view should align to the anchor paragraph
+      final scrollableFinder = find.byType(Scrollable).first;
+      final scrollableState = tester.state<ScrollableState>(scrollableFinder);
+      expect(
+        scrollableState.position.pixels,
+        greaterThan(0.0),
+        reason:
+            'Continuous view must scroll to the target anchor paragraph rather than offset 0.0',
+      );
+
+      final anchorAfter = container.read(activeReadingAnchorProvider);
+      expect(
+        anchorAfter?.paragraphIndex,
+        anchorBefore.paragraphIndex,
+        reason:
+            'Active anchor paragraph must be preserved when switching from paginated to continuous',
+      );
+
+      // Clean up any remaining animations or timers
+      await tester.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets(
+        'Continuous -> Paginated mode switch opens matching page without resetting to Page 1',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 1000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hasInstalledTtsModelsProvider.overrideWithValue(true),
+          documentChapterNodesProvider.overrideWith(
+            (ref, arg) => Future.value(sampleNodes),
+          ),
+          documentChapterTitleProvider.overrideWith(
+            (ref, arg) => Future.value('Chapter 1'),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container
+          .read(readerSettingsProvider.notifier)
+          .setReadingMode(ReadingMode.continuous);
+
+      await tester.pumpWidget(
+        _createTestApp(container: container, document: testEpubDoc),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final scrollableFinder = find.byType(Scrollable).first;
+      // Scroll down substantially to reach paragraph 10+
+      await tester.drag(scrollableFinder, const Offset(0, -1200));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final continuousAnchor = container.read(activeReadingAnchorProvider);
+      expect(continuousAnchor, isNotNull);
+      expect(continuousAnchor!.paragraphIndex, greaterThan(3));
+
+      // Switch mode to Paginated
+      await container
+          .read(readerSettingsProvider.notifier)
+          .setReadingMode(ReadingMode.paginated);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final paginatedCanvasState =
+          tester.state<ReaderCanvasState>(find.byType(ReaderCanvas));
+      final resolvedPage = paginatedCanvasState.safeGetEpubPage()?.round();
+      expect(resolvedPage, isNotNull);
+      expect(
+        resolvedPage,
+        isNot(equals(0)),
+        reason:
+            'Switching from continuous mode deep in a chapter to paginated mode must not reset to Page 1',
+      );
+
+      // Clean up any remaining animations or timers
+      await tester.pump(const Duration(milliseconds: 400));
+    });
   });
 }
