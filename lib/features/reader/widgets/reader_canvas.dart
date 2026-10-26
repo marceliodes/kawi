@@ -133,46 +133,90 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
   static const Duration _kTrackpadCooldown = Duration(milliseconds: 380);
 
   double _accumulatedTrackpadDelta = 0.0;
+  bool _isPanGestureActive = false;
+  bool _isPanLatched = false;
+  bool _isScrollLatched = false;
+  Timer? _scrollLatchResetTimer;
   DateTime _lastTrackpadPageTurnTime = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastOverscrollNavTime = DateTime.fromMillisecondsSinceEpoch(0);
 
-  void _resetTrackpadAccumulation() {
+  void _resetGestureLatch() {
+    _isPanGestureActive = false;
+    _isPanLatched = false;
+    _isScrollLatched = false;
+    _scrollLatchResetTimer?.cancel();
+    _scrollLatchResetTimer = null;
     _accumulatedTrackpadDelta = 0.0;
   }
 
-  void _handleTrackpadDelta(double dx) {
+  void _handleTrackpadDelta(double delta, {bool isPanZoom = false}) {
     if (!widget.settings.isPaginated) return;
-    if (dx == 0) return;
+    if (delta == 0) return;
 
     final now = clock.now();
 
     // 1. Momentum latch / cooldown immediately after triggering a page turn
     // (absorb subsequent inertial scroll events to prevent inertia flinging on desktop).
-    if (now.difference(_lastTrackpadPageTurnTime) < _kTrackpadCooldown) {
-      _accumulatedTrackpadDelta = 0.0;
-      return;
+    if (isPanZoom) {
+      if (_isPanGestureActive && _isPanLatched) {
+        _accumulatedTrackpadDelta = 0.0;
+        return;
+      }
+    } else {
+      if (_isScrollLatched ||
+          now.difference(_lastTrackpadPageTurnTime) < _kTrackpadCooldown) {
+        _accumulatedTrackpadDelta = 0.0;
+        if (delta.abs() < 1.0 &&
+            now.difference(_lastTrackpadPageTurnTime) >=
+                const Duration(milliseconds: 150)) {
+          _isScrollLatched = false;
+        }
+        return;
+      }
     }
 
     // 2. Clear accumulated delta on direction change
-    if ((_accumulatedTrackpadDelta > 0 && dx < 0) ||
-        (_accumulatedTrackpadDelta < 0 && dx > 0)) {
+    if ((_accumulatedTrackpadDelta > 0 && delta < 0) ||
+        (_accumulatedTrackpadDelta < 0 && delta > 0)) {
       _accumulatedTrackpadDelta = 0.0;
     }
 
-    // 3. Accumulate horizontal delta
-    _accumulatedTrackpadDelta += dx;
+    // 3. Accumulate delta
+    _accumulatedTrackpadDelta += delta;
 
-    // 5. Check threshold
+    // 4. Check threshold
     if (_accumulatedTrackpadDelta >= _kTrackpadSwipeThreshold) {
-      // Swipe left (scrollDelta.dx > 0) navigates to the next page
+      // Swipe left (scrollDelta > 0 or panDelta < 0) navigates to the next page
       _accumulatedTrackpadDelta = 0.0;
       _lastTrackpadPageTurnTime = now;
+      if (isPanZoom) {
+        _isPanLatched = true;
+      } else {
+        _isScrollLatched = true;
+        _scrollLatchResetTimer?.cancel();
+        _scrollLatchResetTimer = Timer(_kTrackpadCooldown, () {
+          if (mounted) {
+            _isScrollLatched = false;
+          }
+        });
+      }
       widget.onUserNavigated?.call();
       goToNextPage();
     } else if (_accumulatedTrackpadDelta <= -_kTrackpadSwipeThreshold) {
-      // Swipe right (scrollDelta.dx < 0) navigates to the previous page
+      // Swipe right (scrollDelta < 0 or panDelta > 0) navigates to the previous page
       _accumulatedTrackpadDelta = 0.0;
       _lastTrackpadPageTurnTime = now;
+      if (isPanZoom) {
+        _isPanLatched = true;
+      } else {
+        _isScrollLatched = true;
+        _scrollLatchResetTimer?.cancel();
+        _scrollLatchResetTimer = Timer(_kTrackpadCooldown, () {
+          if (mounted) {
+            _isScrollLatched = false;
+          }
+        });
+      }
       widget.onUserNavigated?.call();
       goToPreviousPage();
     }
@@ -984,6 +1028,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
 
   @override
   void dispose() {
+    _scrollLatchResetTimer?.cancel();
     _prewarmTimer?.cancel();
     _userScrollDebounceTimer?.cancel();
     _continuousAnchorDebounceTimer?.cancel();
@@ -1165,20 +1210,22 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       return;
     }
 
+    final total = widget.pageCount > 0 ? widget.pageCount : 1;
+    final clampedIndex = targetPageIndex.clamp(0, total - 1);
     if (widget.settings.isPaginated) {
       if (_isPageControllerReady) {
-        widget.pageController.jumpToPage(targetPageIndex);
+        widget.pageController.jumpToPage(clampedIndex);
       }
       return;
     }
 
     final controller = _effectiveItemScrollController;
     if (controller.isAttached) {
-      controller.jumpTo(index: targetPageIndex);
+      controller.jumpTo(index: clampedIndex);
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (controller.isAttached) {
-          controller.jumpTo(index: targetPageIndex);
+          controller.jumpTo(index: clampedIndex);
         }
       });
     }
@@ -1244,20 +1291,24 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       return;
     }
 
-    if (!_isProgrammaticNavigation) {
-      widget.onUserNavigated?.call();
-    }
-    if (_isPageControllerReady) {
-      if (animate) {
-        widget.pageController.nextPage(
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeInOut,
-        );
-      } else {
-        final curPage = widget.pageController.page?.round() ?? 0;
-        final total = widget.pageCount > 0 ? widget.pageCount : 1;
-        if (curPage < total - 1) {
-          widget.pageController.jumpToPage(curPage + 1);
+    final total = widget.pageCount > 0 ? widget.pageCount : 1;
+    final curPage = _safeGetPage(widget.pageController)?.round() ??
+        (widget.pageController.hasClients ? widget.pageController.page?.round() ?? widget.initialPageIndex : widget.initialPageIndex);
+    final clamped = curPage.clamp(0, total - 1);
+    if (clamped < total - 1) {
+      if (!_isProgrammaticNavigation) {
+        widget.onUserNavigated?.call();
+      }
+      final nextPage = clamped + 1;
+      if (_isPageControllerReady) {
+        if (animate) {
+          widget.pageController.animateToPage(
+            nextPage,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+          );
+        } else {
+          widget.pageController.jumpToPage(nextPage);
         }
       }
     }
@@ -1323,20 +1374,107 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
       return;
     }
 
-    if (!_isProgrammaticNavigation) {
-      widget.onUserNavigated?.call();
-    }
-    if (_isPageControllerReady) {
-      if (animate) {
-        widget.pageController.previousPage(
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeInOut,
-        );
-      } else {
-        final curPage = widget.pageController.page?.round() ?? 0;
-        if (curPage > 0) {
-          widget.pageController.jumpToPage(curPage - 1);
+    final total = widget.pageCount > 0 ? widget.pageCount : 1;
+    final curPage = _safeGetPage(widget.pageController)?.round() ??
+        (widget.pageController.hasClients ? widget.pageController.page?.round() ?? widget.initialPageIndex : widget.initialPageIndex);
+    final clamped = curPage.clamp(0, total - 1);
+    if (clamped > 0) {
+      if (!_isProgrammaticNavigation) {
+        widget.onUserNavigated?.call();
+      }
+      final prevPage = clamped - 1;
+      if (_isPageControllerReady) {
+        if (animate) {
+          widget.pageController.animateToPage(
+            prevPage,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+          );
+        } else {
+          widget.pageController.jumpToPage(prevPage);
         }
+      }
+    }
+  }
+
+  void goToFirstPage({bool animate = true}) {
+    _focusNode.requestFocus();
+    if (_isEpub) {
+      scrollToPage(0);
+      return;
+    }
+    final total = widget.pageCount > 0 ? widget.pageCount : 1;
+    final curPage = _safeGetPage(widget.pageController)?.round() ??
+        (widget.pageController.hasClients ? widget.pageController.page?.round() ?? widget.initialPageIndex : widget.initialPageIndex);
+    final clamped = curPage.clamp(0, total - 1);
+    if (clamped > 0) {
+      if (!_isProgrammaticNavigation) {
+        widget.onUserNavigated?.call();
+      }
+      if (widget.settings.isPaginated && _isPageControllerReady) {
+        if (animate) {
+          widget.pageController.animateToPage(
+            0,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+          );
+        } else {
+          widget.pageController.jumpToPage(0);
+        }
+      } else {
+        scrollToPage(0);
+      }
+    }
+  }
+
+  void goToLastPage({bool animate = true}) {
+    _focusNode.requestFocus();
+    final total = widget.pageCount > 0 ? widget.pageCount : 1;
+    final lastPageIndex = total - 1;
+    if (_isEpub) {
+      final totalChapters = widget.pageCount > 0 ? widget.pageCount : 1;
+      final target = (widget.pageCount > 0 ? widget.pageCount - 1 : 0).clamp(0, totalChapters - 1);
+      setState(() {
+        _currentChapterIndex = target;
+        _paginatedChapterIndex = null;
+        _lastPageSentinelConsumedForChapter = null;
+        _currentPageIndexInChapter = -1;
+      });
+      _schedulePrewarmAdjacentChapters();
+      if (widget.settings.isPaginated) {
+        final maxP = (_paginatedChapterIndex == target &&
+                _currentChapterPages.isNotEmpty)
+            ? _currentChapterPages.length
+            : null;
+        _recreateEpubPageController(0, maxP);
+      } else {
+        if (_effectiveItemScrollController.isAttached) {
+          _effectiveItemScrollController.jumpTo(index: target);
+        }
+      }
+      widget.onPageChanged(target, 0.0);
+      widget.onEpubPageChanged?.call(target, -1);
+      return;
+    }
+    final curPage = _safeGetPage(widget.pageController)?.round() ??
+        (widget.pageController.hasClients ? widget.pageController.page?.round() ?? widget.initialPageIndex : widget.initialPageIndex);
+    final clamped = curPage.clamp(0, total - 1);
+    if (clamped < lastPageIndex) {
+      if (!_isProgrammaticNavigation) {
+        widget.onUserNavigated?.call();
+      }
+      if (widget.settings.isPaginated && _isPageControllerReady) {
+        if (animate) {
+          widget.pageController.animateToPage(
+            lastPageIndex,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+          );
+        } else {
+          widget.pageController.jumpToPage(lastPageIndex);
+        }
+      } else {
+        scrollToPage(lastPageIndex);
       }
     }
   }
@@ -1492,24 +1630,38 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           }
         }
       },
+      onPointerPanZoomStart: (_) {
+        _isPanGestureActive = true;
+        _isPanLatched = false;
+        _accumulatedTrackpadDelta = 0.0;
+      },
       onPointerPanZoomUpdate: (event) {
-        if (widget.settings.isPaginated && event.panDelta.dx != 0) {
-          // Two-finger pan right on trackpad produces panDelta.dx > 0,
-          // matching scrollDelta.dx < 0 (swipe right -> previous page).
-          _handleTrackpadDelta(-event.panDelta.dx);
+        if (widget.settings.isPaginated) {
+          final double delta;
+          if (event.panDelta.dx.abs() >= event.panDelta.dy.abs()) {
+            delta = -event.panDelta.dx;
+          } else {
+            delta = -event.panDelta.dy;
+          }
+          if (delta != 0) {
+            _handleTrackpadDelta(delta, isPanZoom: true);
+          }
         }
       },
       onPointerPanZoomEnd: (_) {
-        _resetTrackpadAccumulation();
+        _isPanGestureActive = false;
+        _isPanLatched = false;
+        _accumulatedTrackpadDelta = 0.0;
       },
       onPointerDown: (_) {
-        _resetTrackpadAccumulation();
+        _resetGestureLatch();
+        _focusNode.requestFocus();
       },
       onPointerUp: (_) {
-        _resetTrackpadAccumulation();
+        _resetGestureLatch();
       },
       onPointerCancel: (_) {
-        _resetTrackpadAccumulation();
+        _resetGestureLatch();
       },
       onPointerMove: (event) {
         if (event.buttons != 0 || event.kind == PointerDeviceKind.touch) {
@@ -1562,13 +1714,21 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           // Standard page turns without Alt, Ctrl, or Shift
           if (!isAlt && !isControl && !isShift) {
             if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+                event.logicalKey == LogicalKeyboardKey.arrowUp ||
                 event.logicalKey == LogicalKeyboardKey.pageUp) {
               goToPreviousPage();
               return KeyEventResult.handled;
             } else if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
+                event.logicalKey == LogicalKeyboardKey.arrowDown ||
                 event.logicalKey == LogicalKeyboardKey.pageDown ||
                 event.logicalKey == LogicalKeyboardKey.space) {
               goToNextPage();
+              return KeyEventResult.handled;
+            } else if (event.logicalKey == LogicalKeyboardKey.home) {
+              goToFirstPage();
+              return KeyEventResult.handled;
+            } else if (event.logicalKey == LogicalKeyboardKey.end) {
+              goToLastPage();
               return KeyEventResult.handled;
             }
           }
@@ -2141,24 +2301,32 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           physics: const NeverScrollableScrollPhysics(),
           itemCount: effectivePageCount,
           onPageChanged: (index) {
+            _focusNode.requestFocus();
             widget.onPageChanged(index, 0.0);
           },
           itemBuilder: (context, index) {
-            return Center(
-              child: Container(
-                constraints: BoxConstraints(
-                  maxWidth: widget.settings.contentMaxWidth,
-                ),
-                padding: EdgeInsets.symmetric(
-                  horizontal: widget.settings.horizontalPadding,
-                  vertical: Spacing.xl + 40.0,
-                ),
-                child: SingleChildScrollView(
-                  child: _PageContentWidget(
-                    filePath: widget.filePath,
-                    pageIndex: index,
-                    settings: widget.settings,
-                    onPlayFromHere: widget.onPlayFromHere,
+            return GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () {
+                _focusNode.requestFocus();
+                widget.onToggleChrome();
+              },
+              child: Center(
+                child: Container(
+                  constraints: BoxConstraints(
+                    maxWidth: widget.settings.contentMaxWidth,
+                  ),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: widget.settings.horizontalPadding,
+                    vertical: Spacing.xl + 40.0,
+                  ),
+                  child: SingleChildScrollView(
+                    child: _PageContentWidget(
+                      filePath: widget.filePath,
+                      pageIndex: index,
+                      settings: widget.settings,
+                      onPlayFromHere: widget.onPlayFromHere,
+                    ),
                   ),
                 ),
               ),
@@ -2386,6 +2554,9 @@ class _PageContentWidgetState extends ConsumerState<_PageContentWidget> {
                     ttsState: ref.watch(ttsStateProvider),
                   ),
                   textAlign: TextAlign.start,
+                  onTap: () {
+                    context.findAncestorStateOfType<ReaderCanvasState>()?.requestFocus();
+                  },
                   contextMenuBuilder: (context, editableTextState) {
                     return _buildReaderContextMenu(
                       context,

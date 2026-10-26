@@ -55,6 +55,16 @@ class ReaderPreviousPageIntent extends Intent {
   const ReaderPreviousPageIntent();
 }
 
+/// Intent to turn to first page in reader canvas.
+class ReaderFirstPageIntent extends Intent {
+  const ReaderFirstPageIntent();
+}
+
+/// Intent to turn to last page in reader canvas.
+class ReaderLastPageIntent extends Intent {
+  const ReaderLastPageIntent();
+}
+
 class ReaderScreen extends ConsumerStatefulWidget {
   const ReaderScreen({super.key, required this.document});
 
@@ -854,6 +864,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     _canvasKey.currentState?.goToPreviousPage();
   }
 
+  void _turnToFirstPage() {
+    _canvasKey.currentState?.goToFirstPage();
+  }
+
+  void _turnToLastPage() {
+    _canvasKey.currentState?.goToLastPage();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = ReaderTheme.of(context);
@@ -899,19 +917,27 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
       const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
           const TtsSeekBackwardIntent(),
 
-      // Standard page navigation: Arrow Left/Right without Alt, PageUp/PageDown, Space / Shift + Space
+      // Standard page navigation: Arrow Left/Right/Up/Down without Alt, PageUp/PageDown, Space / Shift + Space, Home / End
       const SingleActivator(LogicalKeyboardKey.arrowRight):
+          const ReaderNextPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.arrowDown):
           const ReaderNextPageIntent(),
       const SingleActivator(LogicalKeyboardKey.pageDown):
           const ReaderNextPageIntent(),
-      const SingleActivator(LogicalKeyboardKey.space, shift: true):
-          const ReaderPreviousPageIntent(),
       const SingleActivator(LogicalKeyboardKey.space):
           const ReaderNextPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.space, shift: true):
+          const ReaderPreviousPageIntent(),
       const SingleActivator(LogicalKeyboardKey.arrowLeft):
+          const ReaderPreviousPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.arrowUp):
           const ReaderPreviousPageIntent(),
       const SingleActivator(LogicalKeyboardKey.pageUp):
           const ReaderPreviousPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.home):
+          const ReaderFirstPageIntent(),
+      const SingleActivator(LogicalKeyboardKey.end):
+          const ReaderLastPageIntent(),
     };
 
     final actions = <Type, Action<Intent>>{
@@ -929,6 +955,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
       ),
       ReaderPreviousPageIntent: CallbackAction<ReaderPreviousPageIntent>(
         onInvoke: (_) => _turnToPreviousPage(),
+      ),
+      ReaderFirstPageIntent: CallbackAction<ReaderFirstPageIntent>(
+        onInvoke: (_) => _turnToFirstPage(),
+      ),
+      ReaderLastPageIntent: CallbackAction<ReaderLastPageIntent>(
+        onInvoke: (_) => _turnToLastPage(),
       ),
     };
 
