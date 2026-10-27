@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'tables/app_settings.dart';
+import 'tables/bookmarks.dart';
 import 'tables/document_shelves.dart';
 import 'tables/documents.dart';
 import 'tables/reading_progress.dart';
@@ -14,13 +15,20 @@ import 'tables/shelves.dart';
 part 'app_database.g.dart';
 
 @DriftDatabase(
-  tables: [Documents, ReadingProgresses, Shelves, DocumentShelves, AppSettings],
+  tables: [
+    Documents,
+    ReadingProgresses,
+    Shelves,
+    DocumentShelves,
+    AppSettings,
+    Bookmarks,
+  ],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? e]) : super(e ?? _openConnection());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -31,6 +39,9 @@ class AppDatabase extends _$AppDatabase {
       if (from < 2) {
         await m.createTable(appSettings);
         await m.addColumn(readingProgresses, readingProgresses.currentChapter);
+      }
+      if (from < 3) {
+        await m.createTable(bookmarks);
       }
     },
   );
@@ -108,6 +119,7 @@ class AppDatabase extends _$AppDatabase {
     await (delete(
       readingProgresses,
     )..where((t) => t.documentId.equals(id))).go();
+    await (delete(bookmarks)..where((t) => t.documentId.equals(id))).go();
     await (delete(documents)..where((t) => t.id.equals(id))).go();
   }
 
@@ -186,6 +198,50 @@ class AppDatabase extends _$AppDatabase {
   Future<Map<String, String>> getAllSettings() async {
     final rows = await select(appSettings).get();
     return {for (final row in rows) row.key: row.value};
+  }
+
+  Stream<List<BookmarkEntry>> watchBookmarksForDocument(String documentId) {
+    return (select(bookmarks)
+          ..where((t) => t.documentId.equals(documentId))
+          ..orderBy([
+            (t) =>
+                OrderingTerm(expression: t.createdAt, mode: OrderingMode.desc),
+          ]))
+        .watch();
+  }
+
+  Future<List<BookmarkEntry>> getBookmarksForDocument(String documentId) {
+    return (select(bookmarks)
+          ..where((t) => t.documentId.equals(documentId))
+          ..orderBy([
+            (t) =>
+                OrderingTerm(expression: t.createdAt, mode: OrderingMode.desc),
+          ]))
+        .get();
+  }
+
+  Future<void> insertBookmark(BookmarksCompanion bookmark) {
+    return into(bookmarks).insertOnConflictUpdate(bookmark);
+  }
+
+  Future<void> deleteBookmark(String id) {
+    return (delete(bookmarks)..where((t) => t.id.equals(id))).go();
+  }
+
+  Future<void> deleteBookmarkByAnchor({
+    required String documentId,
+    required int chapterIndex,
+    required int paragraphIndex,
+    required int charOffset,
+  }) {
+    return (delete(bookmarks)..where(
+          (t) =>
+              t.documentId.equals(documentId) &
+              t.chapterIndex.equals(chapterIndex) &
+              t.paragraphIndex.equals(paragraphIndex) &
+              t.charOffset.equals(charOffset),
+        ))
+        .go();
   }
 }
 

@@ -19,6 +19,7 @@ import '../models/document_models.dart';
 import '../models/reader_settings.dart';
 import '../providers/document_content_provider.dart';
 import '../providers/reader_settings_provider.dart';
+import '../services/chapter_paginator.dart';
 import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/services/tts_text_normalizer.dart';
@@ -366,6 +367,63 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         resolved,
         pages.isNotEmpty ? pages.length : null,
       );
+    }
+  }
+
+  /// Navigates cleanly to the specified [ReadingAnchor].
+  ///
+  /// In Paginated mode, resolves the target page in chapter and jumps to it.
+  /// In Continuous mode, scrolls smoothly or jumps to the target AST node while
+  /// respecting the 80px reading headroom.
+  void navigateToAnchor(ReadingAnchor anchor, {bool jump = false}) {
+    if (!mounted) return;
+    _focusNode.requestFocus();
+
+    ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+      chapterIndex: anchor.chapterIndex,
+      paragraphIndex: anchor.paragraphIndex,
+      charOffset: anchor.charOffset,
+    );
+
+    if (!_isEpub) {
+      if (widget.settings.isPaginated) {
+        if (widget.pageController.hasClients &&
+            widget.pageController.positions.length == 1) {
+          widget.pageController.jumpToPage(anchor.chapterIndex);
+        }
+      } else {
+        scrollToPage(anchor.chapterIndex);
+      }
+      return;
+    }
+
+    if (widget.settings.isPaginated) {
+      if (_currentChapterIndex == anchor.chapterIndex) {
+        final pages = _effectivePages;
+        final targetPage = ChapterPaginator.findPageForAnchor(
+          pages: pages,
+          paragraphIndex: anchor.paragraphIndex,
+          charOffset: anchor.charOffset,
+        );
+        jumpToPageInChapter(targetPage);
+      } else {
+        _currentChapterIndex = anchor.chapterIndex;
+        widget.onPageChanged(anchor.chapterIndex, 0.0);
+        widget.onChapterChanged?.call(anchor.chapterIndex);
+      }
+    } else {
+      if (_currentChapterIndex == anchor.chapterIndex) {
+        final scrolled = _scrollToAnchorNode(anchor, jump: jump);
+        if (!scrolled) {
+          _pendingContinuousScrollAnchor = anchor;
+        }
+      } else {
+        _currentChapterIndex = anchor.chapterIndex;
+        _pendingContinuousScrollAnchor = anchor;
+        _isProgrammaticReanchoring = true;
+        widget.onPageChanged(anchor.chapterIndex, 0.0);
+        widget.onChapterChanged?.call(anchor.chapterIndex);
+      }
     }
   }
 

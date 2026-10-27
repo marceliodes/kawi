@@ -17,7 +17,10 @@ import '../../../core/utils/logger.dart';
 import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
 import '../providers/document_content_provider.dart';
+import '../models/bookmark.dart';
+import '../providers/bookmarks_provider.dart';
 import '../providers/reader_settings_provider.dart';
+import '../services/chapter_paginator.dart';
 import '../services/document_extractor.dart';
 import '../widgets/reader_canvas.dart';
 import '../widgets/reader_settings_modal.dart';
@@ -29,6 +32,16 @@ import '../../tts/providers/tts_provider.dart';
 import '../../tts/providers/voice_manager_provider.dart';
 import '../../tts/screens/voice_manager_screen.dart';
 import '../../tts/services/tts_text_normalizer.dart';
+
+/// Intent to toggle bookmark state at the active reading anchor.
+class ToggleBookmarkIntent extends Intent {
+  const ToggleBookmarkIntent();
+}
+
+/// Intent to toggle the side navigation drawer (Contents & Bookmarks).
+class ToggleNavigationDrawerIntent extends Intent {
+  const ToggleNavigationDrawerIntent();
+}
 
 /// Intent to toggle TTS playback (Play/Pause/Resume/Start).
 class ToggleTtsPlaybackIntent extends Intent {
@@ -103,12 +116,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
 
   double? _currentColumnWidth;
   double? _currentColumnHeight;
+  late final AppDatabase _db;
 
   bool get _isEpub => widget.document.isEpub;
 
   @override
   void initState() {
     super.initState();
+    _db = ref.read(databaseProvider);
     WidgetsBinding.instance.addObserver(this);
     _scrollController = ScrollController();
     _pageController = PageController();
@@ -324,7 +339,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     _progressSaveDebounce?.cancel();
     _progressSaveDebounce = null;
     try {
-      final db = ref.read(databaseProvider);
+      final db = _db;
       final resolvedPageIndex = pageIndex ?? _currentPageIndex;
       final resolvedSentenceIndex =
           pageIndexInChapter ?? _currentPageIndexInChapter;
@@ -394,6 +409,191 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
 
     _resolveChapterTitle(clampedPage);
     _debounceSaveProgress(clampedPage, _currentScrollOffset, pageIndexInChapter: 0);
+  }
+
+  Future<String> _extractSnippetForAnchor(ReadingAnchor anchor) async {
+    if (widget.document.isEpub) {
+      try {
+        final nodes = await ref.read(documentChapterNodesProvider((
+          filePath: widget.document.filePath,
+          chapterIndex: anchor.chapterIndex,
+        )).future);
+
+        if (anchor.paragraphIndex >= 0 && anchor.paragraphIndex < nodes.length) {
+          final node = nodes[anchor.paragraphIndex];
+          String fullText = '';
+          if (node is ParagraphNode) {
+            fullText = node.plainText;
+          } else if (node is HeadingNode) {
+            fullText = node.plainText;
+          }
+
+          if (fullText.trim().isNotEmpty) {
+            String rawSlice = fullText;
+            if (anchor.charOffset > 0 && anchor.charOffset < fullText.length) {
+              rawSlice = fullText.substring(anchor.charOffset);
+            }
+            final clean = rawSlice.replaceAll(RegExp(r'\s+'), ' ').trim();
+            if (clean.length > 120) {
+              return '${clean.substring(0, 117)}...';
+            }
+            return clean;
+          }
+        }
+      } catch (_) {
+        // Fallback below
+      }
+    }
+
+    // Fallback for PDF or unloaded EPUB nodes
+    final firstSnippet = _canvasKey.currentState?.getFirstVisibleTextSnippet();
+    if (firstSnippet != null && firstSnippet.trim().isNotEmpty) {
+      final clean = firstSnippet.replaceAll(RegExp(r'\s+'), ' ').trim();
+      return clean.length > 120 ? '${clean.substring(0, 117)}...' : clean;
+    }
+
+    return widget.document.isEpub
+        ? 'Chapter ${anchor.chapterIndex + 1} bookmark'
+        : 'Page ${anchor.chapterIndex + 1} bookmark';
+  }
+
+  Future<void> _toggleBookmark({Bookmark? existingBookmark}) async {
+    final settings = ref.read(readerSettingsProvider);
+    final anchor = ref.read(activeReadingAnchorProvider) ??
+        ReadingAnchor(
+          chapterIndex: _currentChapterIndex,
+          paragraphIndex: 0,
+          charOffset: 0,
+        );
+
+    existingBookmark ??= findBookmarkForActivePage(
+      bookmarks: ref.read(bookmarksStreamProvider(widget.document.id)).value ?? const [],
+      chapterIndex: _currentChapterIndex,
+      activePageChunk: (_currentChapterPages.isNotEmpty &&
+              _currentPageIndexInChapter >= 0 &&
+              _currentPageIndexInChapter < _currentChapterPages.length)
+          ? _currentChapterPages[_currentPageIndexInChapter]
+          : null,
+      activeAnchor: anchor,
+      isPaginated: settings.isPaginated,
+      isEpub: widget.document.isEpub,
+    );
+
+    final snippet = await _extractSnippetForAnchor(anchor);
+    final result = await ref.read(bookmarksControllerProvider).toggleBookmark(
+          documentId: widget.document.id,
+          anchor: anchor,
+          existingBookmarkOnPage: existingBookmark,
+          chapterTitle: _currentChapterTitle,
+          snippet: snippet,
+        );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result == 'added' ? 'Bookmark added' : 'Bookmark removed',
+          ),
+          duration: const Duration(milliseconds: 1500),
+          behavior: SnackBarBehavior.floating,
+          width: 200,
+        ),
+      );
+    }
+  }
+
+  void _toggleNavigationDrawer() {
+    if (_scaffoldKey.currentState?.isDrawerOpen == true) {
+      Navigator.of(context).pop();
+    } else {
+      _scaffoldKey.currentState?.openDrawer();
+    }
+  }
+
+  Future<void> _navigateToAnchor(ReadingAnchor anchor) async {
+    final total = widget.document.pageCount > 0 ? widget.document.pageCount : 1;
+    final clampedChapter = anchor.chapterIndex.clamp(0, total - 1);
+    final isEpub = widget.document.isEpub;
+
+    if (!isEpub) {
+      _navigateToPage(clampedChapter);
+      return;
+    }
+
+    final settings = ref.read(readerSettingsProvider);
+    if (settings.isPaginated) {
+      if (_currentChapterIndex == clampedChapter && _currentChapterPages.isNotEmpty) {
+        final targetPage = ChapterPaginator.findPageForAnchor(
+          pages: _currentChapterPages,
+          paragraphIndex: anchor.paragraphIndex,
+          charOffset: anchor.charOffset,
+        );
+        setState(() {
+          _currentPageIndexInChapter = targetPage;
+        });
+        _canvasKey.currentState?.jumpToPageInChapter(targetPage);
+        ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+              chapterIndex: clampedChapter,
+              paragraphIndex: anchor.paragraphIndex,
+              charOffset: anchor.charOffset,
+            );
+        _debounceSaveProgress(clampedChapter, 0.0, pageIndexInChapter: targetPage);
+      } else {
+        setState(() {
+          _currentPageIndex = clampedChapter;
+          _currentChapterIndex = clampedChapter;
+          _currentPageIndexInChapter = 0;
+          _currentScrollOffset = 0.0;
+        });
+        ref.read(activeReadingAnchorProvider.notifier).updateAnchor(
+              chapterIndex: clampedChapter,
+              paragraphIndex: anchor.paragraphIndex,
+              charOffset: anchor.charOffset,
+            );
+        _resolveChapterTitle(clampedChapter);
+
+        try {
+          final paginationParams = PaginationParams(
+            filePath: widget.document.filePath,
+            chapterIndex: clampedChapter,
+            maxWidth: _currentColumnWidth ?? 600.0,
+            maxHeight: _currentColumnHeight ?? 800.0,
+            textStyle: TextStyle(
+              fontFamily: settings.fontFamily,
+              fontSize: settings.fontSize,
+              height: settings.lineHeight,
+              color: ReaderTheme.of(context).textPrimary,
+            ),
+            paragraphSpacing: settings.paragraphSpacing,
+          );
+          final pages = await ref.read(chapterPagesProvider(paginationParams).future);
+          if (mounted && pages.isNotEmpty) {
+            _currentChapterPages = pages;
+            final targetPage = ChapterPaginator.findPageForAnchor(
+              pages: pages,
+              paragraphIndex: anchor.paragraphIndex,
+              charOffset: anchor.charOffset,
+            );
+            setState(() {
+              _currentPageIndexInChapter = targetPage;
+            });
+            _canvasKey.currentState?.jumpToPageInChapter(targetPage);
+            _debounceSaveProgress(clampedChapter, 0.0, pageIndexInChapter: targetPage);
+          }
+        } catch (_) {
+          _canvasKey.currentState?.jumpToPageInChapter(0);
+        }
+      }
+    } else {
+      setState(() {
+        _currentPageIndex = clampedChapter;
+        _currentChapterIndex = clampedChapter;
+      });
+      _canvasKey.currentState?.navigateToAnchor(anchor);
+      _resolveChapterTitle(clampedChapter);
+      _debounceSaveProgress(clampedChapter, 0.0);
+    }
   }
 
   Future<void> _openSettingsModal([int initialTab = 0]) async {
@@ -899,6 +1099,18 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     });
 
     final shortcuts = <ShortcutActivator, Intent>{
+      // Bookmark Toggle: Ctrl + D, Cmd + D
+      const SingleActivator(LogicalKeyboardKey.keyD, control: true):
+          const ToggleBookmarkIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyD, meta: true):
+          const ToggleBookmarkIntent(),
+
+      // Navigation Drawer Toggle: Ctrl + T, Cmd + T
+      const SingleActivator(LogicalKeyboardKey.keyT, control: true):
+          const ToggleNavigationDrawerIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyT, meta: true):
+          const ToggleNavigationDrawerIntent(),
+
       // TTS Toggle: Ctrl + Space, hardware media keys
       const SingleActivator(LogicalKeyboardKey.space, control: true):
           const ToggleTtsPlaybackIntent(),
@@ -941,6 +1153,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     };
 
     final actions = <Type, Action<Intent>>{
+      ToggleBookmarkIntent: CallbackAction<ToggleBookmarkIntent>(
+        onInvoke: (_) => _toggleBookmark(),
+      ),
+      ToggleNavigationDrawerIntent: CallbackAction<ToggleNavigationDrawerIntent>(
+        onInvoke: (_) => _toggleNavigationDrawer(),
+      ),
       ToggleTtsPlaybackIntent: CallbackAction<ToggleTtsPlaybackIntent>(
         onInvoke: (_) => _toggleTtsPlayback(),
       ),
@@ -974,6 +1192,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
             key: _scaffoldKey,
             backgroundColor: theme.bgCanvas,
             drawer: TocDrawer(
+              documentId: widget.document.id,
               filePath: widget.document.filePath,
               currentPageIndex: _currentChapterIndex,
               isPaginated: settings.isPaginated,
@@ -983,6 +1202,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
                   _currentPageIndexInChapter = 0;
                 });
                 _navigateToPage(pageIndex);
+              },
+              onSelectAnchor: (anchor) {
+                Navigator.of(context).pop();
+                _navigateToAnchor(anchor);
               },
             ),
             body: LayoutBuilder(
@@ -1237,15 +1460,15 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
             onPressed: () => Navigator.of(context).pop(),
           ),
 
-          // Table of Contents Toggle
+          // Unified Navigation Drawer Toggle (TOC + Bookmarks)
           IconButton(
             tooltip: 'Table of Contents',
             icon: PhosphorIcon(
-              PhosphorIconsLight.listBullets,
+              PhosphorIconsLight.sidebarSimple,
               size: 20,
               color: theme.textPrimary,
             ),
-            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+            onPressed: _toggleNavigationDrawer,
           ),
 
           const SizedBox(width: Spacing.xs),
@@ -1285,6 +1508,45 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
           ),
 
           const SizedBox(width: Spacing.xs),
+
+          // Bookmark Toggle Button
+          Builder(
+            builder: (context) {
+              final bookmarksAsync =
+                  ref.watch(bookmarksStreamProvider(widget.document.id));
+              final settings = ref.watch(readerSettingsProvider);
+              final activeAnchor = ref.watch(activeReadingAnchorProvider);
+              final activeBookmark = findBookmarkForActivePage(
+                bookmarks: bookmarksAsync.value ?? const [],
+                chapterIndex: _currentChapterIndex,
+                activePageChunk: (_currentChapterPages.isNotEmpty &&
+                        _currentPageIndexInChapter >= 0 &&
+                        _currentPageIndexInChapter <
+                            _currentChapterPages.length)
+                    ? _currentChapterPages[_currentPageIndexInChapter]
+                    : null,
+                activeAnchor: activeAnchor,
+                isPaginated: settings.isPaginated,
+                isEpub: widget.document.isEpub,
+              );
+              final isBookmarked = activeBookmark != null;
+
+              return IconButton(
+                tooltip: isBookmarked
+                    ? 'Remove Bookmark (Ctrl+D)'
+                    : 'Add Bookmark (Ctrl+D)',
+                icon: PhosphorIcon(
+                  isBookmarked
+                      ? PhosphorIconsFill.bookmarkSimple
+                      : PhosphorIconsLight.bookmarkSimple,
+                  size: 20,
+                  color: isBookmarked ? theme.accent : theme.textPrimary,
+                ),
+                onPressed: () =>
+                    _toggleBookmark(existingBookmark: activeBookmark),
+              );
+            },
+          ),
 
           // Dedicated Read Aloud (TTS) Button
           IconButton(

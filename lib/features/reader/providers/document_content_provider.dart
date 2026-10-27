@@ -228,6 +228,30 @@ class ReadingAnchor {
   final int paragraphIndex;
   final int charOffset;
 
+  ReadingAnchor copyWith({
+    int? chapterIndex,
+    int? paragraphIndex,
+    int? charOffset,
+  }) {
+    return ReadingAnchor(
+      chapterIndex: chapterIndex ?? this.chapterIndex,
+      paragraphIndex: paragraphIndex ?? this.paragraphIndex,
+      charOffset: charOffset ?? this.charOffset,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'chapterIndex': chapterIndex,
+    'paragraphIndex': paragraphIndex,
+    'charOffset': charOffset,
+  };
+
+  factory ReadingAnchor.fromJson(Map<String, dynamic> json) => ReadingAnchor(
+    chapterIndex: json['chapterIndex'] as int,
+    paragraphIndex: json['paragraphIndex'] as int,
+    charOffset: json['charOffset'] as int,
+  );
+
   @override
   String toString() =>
       'ReadingAnchor(ch: $chapterIndex, P: $paragraphIndex, offset: $charOffset)';
