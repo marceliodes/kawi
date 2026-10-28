@@ -41,6 +41,7 @@ class ChapterPaginator {
 
     final pages = <PageChunk>[];
     var currentPageNodes = <DocumentNode>[];
+    var currentPageNodeMetadata = <({int paragraphIndex, int startCharOffset})>[];
     final lineHeight =
         (textStyle.fontSize ?? 16.0) * (textStyle.height ?? 1.5);
     final nodeHeadroomSlack = (lineHeight * 0.85).clamp(18.0, 26.0);
@@ -65,8 +66,10 @@ class ChapterPaginator {
         endParagraphIndex: pageEndNodeIndex,
         startCharOffset: pageStartCharOffset,
         endCharOffset: pageEndCharOffset,
+        nodeMetadata: List.unmodifiable(currentPageNodeMetadata),
       ));
       currentPageNodes = [];
+      currentPageNodeMetadata = [];
       remainingHeight = usableHeight;
     }
 
@@ -108,6 +111,9 @@ class ChapterPaginator {
           endParagraphIndex: originalNodeIndex,
           startCharOffset: 0,
           endCharOffset: 0,
+          nodeMetadata: [
+            (paragraphIndex: originalNodeIndex, startCharOffset: 0),
+          ],
         ));
 
         // Reset pagination height for subsequent nodes
@@ -148,6 +154,10 @@ class ChapterPaginator {
           remainingHeight) {
         // Fits completely on the current page
         currentPageNodes.add(currentNode);
+        currentPageNodeMetadata.add((
+          paragraphIndex: originalNodeIndex,
+          startCharOffset: startOffsetInThisNode,
+        ));
         remainingHeight -= nodeTotalHeight;
 
         final nodeLength = currentNode is ParagraphNode
@@ -262,6 +272,10 @@ class ChapterPaginator {
             : HeadingNode((currentNode as HeadingNode).level, split.bottom);
 
         currentPageNodes.add(topNode);
+        currentPageNodeMetadata.add((
+          paragraphIndex: originalNodeIndex,
+          startCharOffset: startOffsetInThisNode,
+        ));
         pageEndNodeIndex = originalNodeIndex;
         pageEndCharOffset = startOffsetInThisNode + splitOffset;
 

@@ -25,8 +25,8 @@ void main() {
   });
 
   group('Bookmarks Drift Database Operations', () {
-    test('database schemaVersion is 3', () {
-      expect(db.schemaVersion, 3);
+    test('database schemaVersion is 4', () {
+      expect(db.schemaVersion, 4);
     });
 
     test('can insert and watch bookmarks for a document', () async {

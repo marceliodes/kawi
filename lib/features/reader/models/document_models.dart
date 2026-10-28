@@ -93,6 +93,7 @@ class PageChunk {
     required this.endParagraphIndex,
     required this.startCharOffset,
     required this.endCharOffset,
+    this.nodeMetadata = const [],
   });
 
   final int pageIndexInChapter;
@@ -102,6 +103,7 @@ class PageChunk {
   final int endParagraphIndex;
   final int startCharOffset;
   final int endCharOffset;
+  final List<({int paragraphIndex, int startCharOffset})> nodeMetadata;
 
   /// Returns true if this page contains the specified paragraph and character anchor.
   bool containsAnchor({

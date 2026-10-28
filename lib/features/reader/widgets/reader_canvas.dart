@@ -16,10 +16,15 @@ import '../../../core/theme/typography.dart';
 import '../../../core/utils/logger.dart';
 import '../constants/reader_layout_constants.dart';
 import '../models/document_models.dart';
+import '../models/highlight.dart';
 import '../models/reader_settings.dart';
 import '../providers/document_content_provider.dart';
+import '../providers/highlights_provider.dart';
 import '../providers/reader_settings_provider.dart';
 import '../services/chapter_paginator.dart';
+import '../services/highlight_span_builder.dart';
+import 'highlight_note_dialog.dart';
+import 'reader_selection_toolbar.dart';
 import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/services/tts_text_normalizer.dart';
@@ -27,6 +32,7 @@ import '../../tts/services/tts_text_normalizer.dart';
 class ReaderCanvas extends ConsumerStatefulWidget {
   const ReaderCanvas({
     super.key,
+    this.documentId,
     required this.filePath,
     required this.pageCount,
     required this.settings,
@@ -56,6 +62,7 @@ class ReaderCanvas extends ConsumerStatefulWidget {
     this.isTtsBarVisible = false,
   });
 
+  final String? documentId;
   final String filePath;
   final int pageCount;
   final ReaderSettings settings;
@@ -2136,15 +2143,21 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
                             ),
                           ),
 
-                          for (final node in chunk.nodes)
+                          for (var nodeIdx = 0; nodeIdx < chunk.nodes.length; nodeIdx++)
                             Padding(
                               padding: EdgeInsets.only(
                                   bottom: ref.watch(readerSettingsProvider).paragraphSpacing),
                               child: _buildNodeWidget(
-                                node,
+                                chunk.nodes[nodeIdx],
                                 textStyle,
                                 theme,
                                 viewportHeight: columnHeight,
+                                paragraphIndex: nodeIdx < chunk.nodeMetadata.length
+                                    ? chunk.nodeMetadata[nodeIdx].paragraphIndex
+                                    : (chunk.startParagraphIndex + nodeIdx),
+                                sliceCharOffset: nodeIdx < chunk.nodeMetadata.length
+                                    ? chunk.nodeMetadata[nodeIdx].startCharOffset
+                                    : (nodeIdx == 0 ? chunk.startCharOffset : 0),
                               ),
                             ),
                         ],
@@ -2296,6 +2309,7 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
         itemCount: totalChapters,
         itemBuilder: (context, chapterIdx) {
           return _ContinuousChapterSectionWidget(
+            documentId: widget.documentId,
             filePath: widget.filePath,
             chapterIndex: chapterIdx,
             initialNodes: (chapterIdx == widget.chapterIndex &&
@@ -2322,25 +2336,21 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
     ReaderThemeData theme, {
     double? viewportHeight,
     int? paragraphIndex,
+    int? sliceCharOffset,
   }) {
     return _EpubScopedNodeWidget(
+      documentId: widget.documentId,
       node: node,
       chapterIndex: _currentChapterIndex,
       paragraphIndex: paragraphIndex,
+      sliceCharOffset: sliceCharOffset ?? 0,
       baseStyle: baseStyle,
       theme: theme,
       viewportHeight: viewportHeight,
       isUserDesynced: widget.isUserDesyncedFromTts,
       onProgrammaticScroll: _setProgrammaticScroll,
       isContinuous: !widget.settings.isPaginated,
-      contextMenuBuilder: (context, editableTextState) {
-        return _buildContextMenu(
-          context,
-          editableTextState,
-          theme,
-          nodeText: node.toPlainText(),
-        );
-      },
+      onPlayFromHere: widget.onPlayFromHere,
     );
   }
 
@@ -2502,21 +2512,6 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildContextMenu(
-    BuildContext context,
-    EditableTextState state,
-    ReaderThemeData theme, {
-    String? nodeText,
-  }) {
-    return _buildReaderContextMenu(
-      context,
-      state,
-      theme,
-      onPlayFromHere: widget.onPlayFromHere,
-      nodeText: nodeText,
     );
   }
 }
@@ -2855,13 +2850,28 @@ Widget _buildReaderContextMenu(
   ValueChanged<String>? onPlayFromHere,
   String? nodeText,
 }) {
-  final selectedText = state.textEditingValue.selection.textInside(
-    state.textEditingValue.text,
-  );
+  final selection = state.textEditingValue.selection;
+  if (!selection.isValid ||
+      selection.isCollapsed ||
+      selection.start < 0 ||
+      selection.end < 0) {
+    return const SizedBox.shrink();
+  }
+
+  final text = state.textEditingValue.text;
+  if (selection.start > text.length || selection.end > text.length) {
+    return const SizedBox.shrink();
+  }
+
+  final selectedText = selection.textInside(text);
+  if (selectedText.trim().isEmpty) {
+    return const SizedBox.shrink();
+  }
+
   final fullText = (nodeText != null && nodeText.isNotEmpty)
       ? nodeText
-      : state.textEditingValue.text;
-  final selectionStart = state.textEditingValue.selection.start;
+      : text;
+  final selectionStart = selection.start;
 
   final items = <ContextMenuButtonItem>[
     if (selectedText.isNotEmpty && onPlayFromHere != null)
@@ -2914,6 +2924,7 @@ void _searchWeb(String query) {
 }
 
 class _ContinuousChapterSectionWidget extends ConsumerWidget {
+  final String? documentId;
   final String filePath;
   final int chapterIndex;
   final List<DocumentNode>? initialNodes;
@@ -2926,6 +2937,7 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
   final void Function(bool isProgrammatic)? onProgrammaticScroll;
 
   const _ContinuousChapterSectionWidget({
+    this.documentId,
     required this.filePath,
     required this.chapterIndex,
     this.initialNodes,
@@ -3018,6 +3030,7 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16.0),
                     child: _EpubScopedNodeWidget(
+                      documentId: documentId,
                       node: nodes[i],
                       chapterIndex: chapterIndex,
                       paragraphIndex: i,
@@ -3027,14 +3040,7 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
                       isUserDesynced: isUserDesynced,
                       onProgrammaticScroll: onProgrammaticScroll,
                       isContinuous: true,
-                      contextMenuBuilder: (ctx, editableTextState) =>
-                          _buildReaderContextMenu(
-                        ctx,
-                        editableTextState,
-                        theme,
-                        onPlayFromHere: onPlayFromHere,
-                        nodeText: nodes[i].toPlainText(),
-                      ),
+                      onPlayFromHere: onPlayFromHere,
                     ),
                   ),
               ],
@@ -3109,45 +3115,33 @@ extension DocumentNodePlainTextX on DocumentNode {
   }
 }
 
-List<InlineSpan> _buildDefaultSpans(DocumentNode node, TextStyle textStyle) {
-  final List<TextSegment> segments = node is ParagraphNode
-      ? node.segments
-      : (node is HeadingNode ? node.segments : const []);
-  return [
-    for (final s in segments)
-      TextSpan(
-        text: s.text,
-        style: textStyle.copyWith(
-          fontWeight: s.isBold ? FontWeight.bold : null,
-          fontStyle: s.isItalic ? FontStyle.italic : null,
-        ),
-      ),
-  ];
-}
-
 class _EpubScopedNodeWidget extends ConsumerStatefulWidget {
+  final String? documentId;
   final DocumentNode node;
   final int? chapterIndex;
   final int? paragraphIndex;
+  final int? sliceCharOffset;
   final TextStyle baseStyle;
   final ReaderThemeData theme;
   final double? viewportHeight;
-  final Widget Function(BuildContext, EditableTextState)? contextMenuBuilder;
   final bool isUserDesynced;
   final void Function(bool isProgrammatic)? onProgrammaticScroll;
   final bool isContinuous;
+  final ValueChanged<String>? onPlayFromHere;
 
   const _EpubScopedNodeWidget({
+    this.documentId,
     required this.node,
     this.chapterIndex,
     this.paragraphIndex,
+    this.sliceCharOffset = 0,
     required this.baseStyle,
     required this.theme,
     this.viewportHeight,
-    this.contextMenuBuilder,
     this.isUserDesynced = false,
     this.onProgrammaticScroll,
     this.isContinuous = false,
+    this.onPlayFromHere,
   });
 
   @override
@@ -3159,6 +3153,103 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
   bool _wasMatched = false;
   int _lastSentenceIndex = -1;
   ReaderCanvasState? _parentCanvasState;
+  TextSelection? _activeSelection;
+  EditableTextState? _lastEditableTextState;
+  bool _lastPointerWasSecondary = false;
+
+  EditableTextState? _findEditableTextState() {
+    EditableTextState? result;
+    void visitor(Element element) {
+      if (element is StatefulElement && element.state is EditableTextState) {
+        result = element.state as EditableTextState;
+        return;
+      }
+      element.visitChildren(visitor);
+    }
+    if (mounted) {
+      (context as Element).visitChildren(visitor);
+    }
+    return result;
+  }
+
+  void _handlePointerUp() {
+    final editable = _lastEditableTextState ?? _findEditableTextState();
+    if (editable == null || !mounted) return;
+    _lastEditableTextState = editable;
+
+    final selection = editable.textEditingValue.selection;
+    final text = editable.textEditingValue.text;
+    if (selection.isValid &&
+        !selection.isCollapsed &&
+        selection.start >= 0 &&
+        selection.end >= 0 &&
+        selection.end <= text.length &&
+        selection.start < selection.end) {
+      final selectedText = text.substring(selection.start, selection.end);
+      if (selectedText.trim().isNotEmpty) {
+        _activeSelection = selection;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && editable.mounted) {
+            final curSel = editable.textEditingValue.selection;
+            final curText = editable.textEditingValue.text;
+            if (curSel.isValid &&
+                !curSel.isCollapsed &&
+                curSel.start >= 0 &&
+                curSel.end >= 0 &&
+                curSel.end <= curText.length &&
+                curSel.start < curSel.end) {
+              final curSelected = curText.substring(curSel.start, curSel.end);
+              if (curSelected.trim().isNotEmpty) {
+                editable.showToolbar();
+              }
+            }
+          }
+        });
+      }
+    }
+  }
+
+  void _handleSelectionChanged(
+    TextSelection selection,
+    SelectionChangedCause? cause,
+  ) {
+    if (_lastPointerWasSecondary &&
+        _activeSelection != null &&
+        _activeSelection!.isValid &&
+        !_activeSelection!.isCollapsed &&
+        _activeSelection!.start >= 0 &&
+        _activeSelection!.end >= 0) {
+      // Intercept secondary mouse click (right-click) so it does NOT collapse
+      // an existing non-empty selection to a single cursor point!
+      final editable = _lastEditableTextState ?? _findEditableTextState();
+      if (editable != null) {
+        final savedSelection = _activeSelection!;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && editable.mounted) {
+            editable.userUpdateTextEditingValue(
+              editable.textEditingValue.copyWith(selection: savedSelection),
+              SelectionChangedCause.tap,
+            );
+            editable.showToolbar();
+          }
+        });
+      }
+      return;
+    }
+
+    if (selection.isValid &&
+        !selection.isCollapsed &&
+        selection.start >= 0 &&
+        selection.end >= 0) {
+      _activeSelection = selection;
+      final editable = _lastEditableTextState ?? _findEditableTextState();
+      if (editable != null && !editable.widget.focusNode.hasFocus) {
+        editable.widget.focusNode.requestFocus();
+      }
+    } else {
+      _activeSelection = null;
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -3339,127 +3430,269 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
 
     final strutStyle = EpubPaginationMetrics.strutStyleFor(effectiveStyle);
 
-    if (!isMatched) {
-      return SelectableText.rich(
-        TextSpan(
-          style: effectiveStyle,
-          children: _buildDefaultSpans(widget.node, effectiveStyle),
-        ),
+    final docId = widget.documentId;
+    final chapterIdx = widget.chapterIndex ?? 0;
+    final paragraphIdx = widget.paragraphIndex ?? 0;
+    final sliceOffset = widget.sliceCharOffset ?? 0;
+
+    final highlights = (docId != null && docId.isNotEmpty)
+        ? ref.watch(chapterHighlightsProvider((
+            documentId: docId,
+            chapterIndex: chapterIdx,
+          )))
+        : const <Highlight>[];
+
+    final TextSpan contentSpan = HighlightSpanBuilder.buildSpans(
+      node: widget.node,
+      baseStyle: effectiveStyle,
+      chapterIndex: chapterIdx,
+      paragraphIndex: paragraphIdx,
+      sliceCharOffset: sliceOffset,
+      highlights: highlights,
+      theme: widget.theme,
+      ttsState: isMatched ? ttsState : null,
+      ttsHighlightStyle: ref.watch(readerSettingsProvider).ttsHighlightStyle,
+      onHighlightTapped: (hl) {
+        HighlightNoteDialog.show(
+          context,
+          selectedText: hl.highlightedText,
+          initialColorHex: hl.colorHex,
+          initialNote: hl.note,
+          onSave: (colorHex, note) async {
+            if (docId != null && docId.isNotEmpty) {
+              await ref.read(highlightsControllerProvider).updateNote(
+                    hl.id,
+                    note.isNotEmpty ? note : null,
+                  );
+              await ref.read(highlightsControllerProvider).updateColor(
+                    hl.id,
+                    colorHex,
+                  );
+            }
+          },
+          onDelete: () async {
+            if (docId != null && docId.isNotEmpty) {
+              await ref
+                  .read(highlightsControllerProvider)
+                  .deleteHighlight(hl.id);
+            }
+          },
+        );
+      },
+    );
+
+    Widget defaultContextMenuBuilder(
+      BuildContext context,
+      EditableTextState editableTextState,
+    ) {
+      _lastEditableTextState = editableTextState;
+      final selection = editableTextState.textEditingValue.selection;
+      if (!selection.isValid ||
+          selection.isCollapsed ||
+          selection.start < 0 ||
+          selection.end < 0) {
+        return const SizedBox.shrink();
+      }
+
+      final text = editableTextState.textEditingValue.text;
+      if (selection.start > text.length ||
+          selection.end > text.length ||
+          selection.start >= selection.end) {
+        return const SizedBox.shrink();
+      }
+
+      final selectedText = text.substring(selection.start, selection.end);
+
+      if (selectedText.trim().isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      final startOffset = (sliceOffset + selection.start).clamp(0, 0x7FFFFFFF);
+      final endOffset = (sliceOffset + selection.end).clamp(0, 0x7FFFFFFF);
+      if (startOffset < 0 || endOffset < 0 || startOffset >= endOffset) {
+        return const SizedBox.shrink();
+      }
+
+      final startAnchor = ReadingAnchor(
+        chapterIndex: chapterIdx,
+        paragraphIndex: paragraphIdx,
+        charOffset: startOffset,
+      );
+      final endAnchor = ReadingAnchor(
+        chapterIndex: chapterIdx,
+        paragraphIndex: paragraphIdx,
+        charOffset: endOffset,
+      );
+
+      final existingHighlight = highlights.where((h) =>
+          h.startAnchor.chapterIndex == chapterIdx &&
+          h.startAnchor.paragraphIndex == paragraphIdx &&
+          (h.startAnchor.charOffset - startOffset).abs() <= 2 &&
+          (h.endAnchor.charOffset - endOffset).abs() <= 2).firstOrNull;
+
+      void clearSelectionAndDismiss() {
+        _activeSelection = null;
+        editableTextState.userUpdateTextEditingValue(
+          editableTextState.textEditingValue.copyWith(
+            selection: const TextSelection.collapsed(offset: 0),
+          ),
+          SelectionChangedCause.tap,
+        );
+        editableTextState.hideToolbar();
+        ContextMenuController.removeAny();
+      }
+
+      return ReaderSelectionToolbar(
+        anchors: editableTextState.contextMenuAnchors,
+        selectedText: selectedText,
+        startAnchor: startAnchor,
+        endAnchor: endAnchor,
+        existingHighlight: existingHighlight,
+        onColorSelected: (colorHex) async {
+          if (selection.isCollapsed ||
+              !selection.isValid ||
+              selection.start < 0 ||
+              selection.end < 0 ||
+              startOffset < 0 ||
+              endOffset < 0 ||
+              startOffset >= endOffset) {
+            clearSelectionAndDismiss();
+            return;
+          }
+          if (docId != null && docId.isNotEmpty) {
+            if (existingHighlight != null) {
+              await ref.read(highlightsControllerProvider).updateColor(
+                    existingHighlight.id,
+                    colorHex,
+                  );
+            } else {
+              await ref.read(highlightsControllerProvider).createHighlight(
+                    documentId: docId,
+                    startAnchor: startAnchor,
+                    endAnchor: endAnchor,
+                    highlightedText: selectedText,
+                    colorHex: colorHex,
+                  );
+            }
+          }
+          clearSelectionAndDismiss();
+        },
+        onAddOrEditNote: () {
+          clearSelectionAndDismiss();
+          if (selection.isCollapsed ||
+              !selection.isValid ||
+              selection.start < 0 ||
+              selection.end < 0 ||
+              startOffset < 0 ||
+              endOffset < 0 ||
+              startOffset >= endOffset) {
+            return;
+          }
+          HighlightNoteDialog.show(
+            context,
+            selectedText: selectedText,
+            initialColorHex: existingHighlight?.colorHex ?? '#FFD54F',
+            initialNote: existingHighlight?.note,
+            onSave: (colorHex, note) async {
+              if (selection.isCollapsed ||
+                  !selection.isValid ||
+                  selection.start < 0 ||
+                  selection.end < 0 ||
+                  startOffset < 0 ||
+                  endOffset < 0 ||
+                  startOffset >= endOffset) {
+                return;
+              }
+              if (docId != null && docId.isNotEmpty) {
+                if (existingHighlight != null) {
+                  await ref.read(highlightsControllerProvider).updateNote(
+                        existingHighlight.id,
+                        note.isNotEmpty ? note : null,
+                      );
+                  await ref.read(highlightsControllerProvider).updateColor(
+                        existingHighlight.id,
+                        colorHex,
+                      );
+                } else {
+                  await ref.read(highlightsControllerProvider).createHighlight(
+                    documentId: docId,
+                    startAnchor: startAnchor,
+                    endAnchor: endAnchor,
+                    highlightedText: selectedText,
+                    colorHex: colorHex,
+                    note: note.isNotEmpty ? note : null,
+                  );
+                }
+              }
+            },
+            onDelete: existingHighlight != null
+                ? () async {
+                    if (docId != null && docId.isNotEmpty) {
+                      await ref
+                          .read(highlightsControllerProvider)
+                          .deleteHighlight(existingHighlight.id);
+                    }
+                  }
+                : null,
+          );
+        },
+        onClose: clearSelectionAndDismiss,
+        onPlayFromHere: widget.onPlayFromHere != null
+            ? (str) {
+                clearSelectionAndDismiss();
+                widget.onPlayFromHere!(str);
+              }
+            : null,
+        onDeleteHighlight: existingHighlight != null
+            ? () async {
+                if (docId != null && docId.isNotEmpty) {
+                  await ref
+                      .read(highlightsControllerProvider)
+                      .deleteHighlight(existingHighlight.id);
+                }
+                clearSelectionAndDismiss();
+              }
+            : null,
+      );
+    }
+
+    return Listener(
+      onPointerDown: (event) {
+        if (event.buttons == kSecondaryMouseButton) {
+          _lastPointerWasSecondary = true;
+          if (_activeSelection != null &&
+              _activeSelection!.isValid &&
+              !_activeSelection!.isCollapsed &&
+              _activeSelection!.start >= 0 &&
+              _activeSelection!.end >= 0) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              final editable = _lastEditableTextState ?? _findEditableTextState();
+              if (editable != null &&
+                  mounted &&
+                  _activeSelection != null &&
+                  _activeSelection!.isValid &&
+                  !_activeSelection!.isCollapsed &&
+                  _activeSelection!.start >= 0 &&
+                  _activeSelection!.end >= 0) {
+                editable.showToolbar();
+              }
+            });
+          }
+        } else {
+          _lastPointerWasSecondary = false;
+        }
+      },
+      onPointerUp: (event) {
+        _handlePointerUp();
+      },
+      child: SelectableText.rich(
+        contentSpan,
         textAlign: TextAlign.start,
         strutStyle: strutStyle,
         textScaler: TextScaler.noScaling,
-        contextMenuBuilder: widget.contextMenuBuilder,
-      );
-    }
-
-    return SelectableText.rich(
-      _buildHighlightedNodeSpan(
-        node: widget.node,
-        textStyle: effectiveStyle,
-        theme: widget.theme,
-        ttsState: ttsState,
-        highlightStyle: ref.watch(readerSettingsProvider).ttsHighlightStyle,
+        contextMenuBuilder: defaultContextMenuBuilder,
+        onSelectionChanged: _handleSelectionChanged,
       ),
-      textAlign: TextAlign.start,
-      strutStyle: strutStyle,
-      textScaler: TextScaler.noScaling,
-      contextMenuBuilder: widget.contextMenuBuilder,
     );
   }
-}
-
-
-TextSpan _buildHighlightedNodeSpan({
-  required DocumentNode node,
-  required TextStyle textStyle,
-  required ReaderThemeData theme,
-  required TtsState ttsState,
-  TtsHighlightStyle highlightStyle = TtsHighlightStyle.background,
-}) {
-  if (!ttsState.isPlaying && !ttsState.isPaused) {
-    return TextSpan(children: _buildDefaultSpans(node, textStyle));
-  }
-
-  final paragraphText = node.toPlainText();
-  final activeSentenceText = ttsState.currentSentenceText;
-
-  final normNode = paragraphText.replaceAll(RegExp(r'\s+'), ' ').trim();
-  final normSentence =
-      activeSentenceText.replaceAll(RegExp(r'\s+'), ' ').trim();
-
-  if (normNode.isEmpty || normSentence.isEmpty) {
-    return TextSpan(children: _buildDefaultSpans(node, textStyle));
-  }
-
-  final highlightedStyle = highlightStyle == TtsHighlightStyle.underline
-      ? textStyle.copyWith(
-          decoration: TextDecoration.underline,
-          decorationColor: theme.accent,
-          decorationThickness: 2.0,
-        )
-      : textStyle.copyWith(backgroundColor: theme.ttsHighlight);
-
-  // Normalize whitespace and trim string comparison between node.toPlainText()
-  // and ttsState.currentSentenceText so title sentences like "Chapter 3: Resolve"
-  // match and highlight immediately on speech start.
-  final isFullMatch = normNode.toLowerCase() == normSentence.toLowerCase() ||
-      normSentence.toLowerCase().startsWith(normNode.toLowerCase());
-
-  if (isFullMatch) {
-    final spans = _buildDefaultSpans(
-      node,
-      highlightedStyle,
-    );
-    if (spans.isNotEmpty) {
-      return TextSpan(
-        style: highlightedStyle,
-        children: spans,
-      );
-    }
-    return TextSpan(
-      text: paragraphText,
-      style: highlightedStyle,
-    );
-  }
-
-  int startIndex = -1;
-  int endIndex = -1;
-
-  if (paragraphText.contains(activeSentenceText)) {
-    startIndex = paragraphText.indexOf(activeSentenceText);
-    endIndex = startIndex + activeSentenceText.length;
-  } else if (activeSentenceText.trim().isNotEmpty &&
-      paragraphText.contains(activeSentenceText.trim())) {
-    final trimmed = activeSentenceText.trim();
-    startIndex = paragraphText.indexOf(trimmed);
-    endIndex = startIndex + trimmed.length;
-  } else {
-    final words = normSentence.split(' ').where((w) => w.isNotEmpty).toList();
-    if (words.isNotEmpty) {
-      final pattern = RegExp(
-        words.map(RegExp.escape).join(r'\s+'),
-        caseSensitive: false,
-      );
-      final match = pattern.firstMatch(paragraphText);
-      if (match != null) {
-        startIndex = match.start;
-        endIndex = match.end;
-      }
-    }
-  }
-
-  if (startIndex < 0 || endIndex <= startIndex) {
-    return TextSpan(children: _buildDefaultSpans(node, textStyle));
-  }
-
-  return TextSpan(children: [
-    if (startIndex > 0)
-      TextSpan(text: paragraphText.substring(0, startIndex), style: textStyle),
-    TextSpan(
-      text: paragraphText.substring(startIndex, endIndex),
-      style: highlightedStyle,
-    ),
-    if (endIndex < paragraphText.length)
-      TextSpan(text: paragraphText.substring(endIndex), style: textStyle),
-  ]);
 }

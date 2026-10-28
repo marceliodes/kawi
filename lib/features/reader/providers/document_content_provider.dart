@@ -217,7 +217,7 @@ final chapterPagesProvider =
 
 /// Reading position anchor within a chapter, used to restore and preserve
 /// position across column width, font size, or window resize changes.
-class ReadingAnchor {
+class ReadingAnchor implements Comparable<ReadingAnchor> {
   const ReadingAnchor({
     required this.chapterIndex,
     required this.paragraphIndex,
@@ -227,6 +227,22 @@ class ReadingAnchor {
   final int chapterIndex;
   final int paragraphIndex;
   final int charOffset;
+
+  @override
+  int compareTo(ReadingAnchor other) {
+    if (chapterIndex != other.chapterIndex) {
+      return chapterIndex.compareTo(other.chapterIndex);
+    }
+    if (paragraphIndex != other.paragraphIndex) {
+      return paragraphIndex.compareTo(other.paragraphIndex);
+    }
+    return charOffset.compareTo(other.charOffset);
+  }
+
+  bool operator <(ReadingAnchor other) => compareTo(other) < 0;
+  bool operator <=(ReadingAnchor other) => compareTo(other) <= 0;
+  bool operator >(ReadingAnchor other) => compareTo(other) > 0;
+  bool operator >=(ReadingAnchor other) => compareTo(other) >= 0;
 
   ReadingAnchor copyWith({
     int? chapterIndex,

@@ -9,6 +9,7 @@ import 'tables/app_settings.dart';
 import 'tables/bookmarks.dart';
 import 'tables/document_shelves.dart';
 import 'tables/documents.dart';
+import 'tables/highlights.dart';
 import 'tables/reading_progress.dart';
 import 'tables/shelves.dart';
 
@@ -22,13 +23,14 @@ part 'app_database.g.dart';
     DocumentShelves,
     AppSettings,
     Bookmarks,
+    Highlights,
   ],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? e]) : super(e ?? _openConnection());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -42,6 +44,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 3) {
         await m.createTable(bookmarks);
+      }
+      if (from < 4) {
+        await m.createTable(highlights);
       }
     },
   );
@@ -120,6 +125,7 @@ class AppDatabase extends _$AppDatabase {
       readingProgresses,
     )..where((t) => t.documentId.equals(id))).go();
     await (delete(bookmarks)..where((t) => t.documentId.equals(id))).go();
+    await (delete(highlights)..where((t) => t.documentId.equals(id))).go();
     await (delete(documents)..where((t) => t.id.equals(id))).go();
   }
 
@@ -242,6 +248,84 @@ class AppDatabase extends _$AppDatabase {
               t.charOffset.equals(charOffset),
         ))
         .go();
+  }
+
+  Stream<List<HighlightEntry>> watchHighlightsForDocument(String documentId) {
+    return (select(highlights)
+          ..where((t) => t.documentId.equals(documentId))
+          ..orderBy([
+            (t) => OrderingTerm(expression: t.startChapterIndex),
+            (t) => OrderingTerm(expression: t.startParagraphIndex),
+            (t) => OrderingTerm(expression: t.startCharOffset),
+          ]))
+        .watch();
+  }
+
+  Future<List<HighlightEntry>> getHighlightsForDocument(String documentId) {
+    return (select(highlights)
+          ..where((t) => t.documentId.equals(documentId))
+          ..orderBy([
+            (t) => OrderingTerm(expression: t.startChapterIndex),
+            (t) => OrderingTerm(expression: t.startParagraphIndex),
+            (t) => OrderingTerm(expression: t.startCharOffset),
+          ]))
+        .get();
+  }
+
+  Future<List<HighlightEntry>> getHighlightsForChapter({
+    required String documentId,
+    required int chapterIndex,
+  }) {
+    return (select(highlights)
+          ..where((t) =>
+              t.documentId.equals(documentId) &
+              t.startChapterIndex.isSmallerOrEqualValue(chapterIndex) &
+              t.endChapterIndex.isBiggerOrEqualValue(chapterIndex))
+          ..orderBy([
+            (t) => OrderingTerm(expression: t.startParagraphIndex),
+            (t) => OrderingTerm(expression: t.startCharOffset),
+          ]))
+        .get();
+  }
+
+  Stream<List<HighlightEntry>> watchHighlightsForChapter({
+    required String documentId,
+    required int chapterIndex,
+  }) {
+    return (select(highlights)
+          ..where((t) =>
+              t.documentId.equals(documentId) &
+              t.startChapterIndex.isSmallerOrEqualValue(chapterIndex) &
+              t.endChapterIndex.isBiggerOrEqualValue(chapterIndex))
+          ..orderBy([
+            (t) => OrderingTerm(expression: t.startParagraphIndex),
+            (t) => OrderingTerm(expression: t.startCharOffset),
+          ]))
+        .watch();
+  }
+
+  Future<void> insertHighlight(HighlightsCompanion highlight) {
+    return into(highlights).insertOnConflictUpdate(highlight);
+  }
+
+  Future<void> updateHighlightNote(String id, String? note) {
+    return (update(highlights)..where((t) => t.id.equals(id))).write(
+      HighlightsCompanion(note: Value(note)),
+    );
+  }
+
+  Future<void> updateHighlightColor(String id, String colorHex) {
+    return (update(highlights)..where((t) => t.id.equals(id))).write(
+      HighlightsCompanion(colorHex: Value(colorHex)),
+    );
+  }
+
+  Future<void> deleteHighlight(String id) {
+    return (delete(highlights)..where((t) => t.id.equals(id))).go();
+  }
+
+  Future<void> deleteHighlightsForDocument(String documentId) {
+    return (delete(highlights)..where((t) => t.documentId.equals(documentId))).go();
   }
 }
 

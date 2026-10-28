@@ -6,11 +6,15 @@ import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 import '../../../core/theme/reader_theme.dart';
 import '../../../core/theme/spacing.dart';
 import '../../../core/theme/typography.dart';
+import '../../../core/widgets/apple_marquee_text.dart';
 import '../models/bookmark.dart';
+import '../models/highlight.dart';
 import '../providers/bookmarks_provider.dart';
 import '../providers/document_content_provider.dart';
+import '../providers/highlights_provider.dart';
 import '../providers/reader_settings_provider.dart';
 import '../services/document_extractor.dart';
+import 'highlight_note_dialog.dart';
 
 enum NavigationDrawerTab {
   contents,
@@ -24,7 +28,7 @@ enum NavigationDrawerTab {
       case NavigationDrawerTab.bookmarks:
         return 'Bookmarks';
       case NavigationDrawerTab.annotations:
-        return 'Notes & Highlights';
+        return 'Notes';
     }
   }
 
@@ -158,10 +162,17 @@ class _ReaderNavigationDrawerState
                     theme: theme,
                   ),
                 ),
-                const SizedBox(width: Spacing.xs),
+                const SizedBox(width: Spacing.xxs),
                 Expanded(
                   child: _buildTabButton(
                     tab: NavigationDrawerTab.bookmarks,
+                    theme: theme,
+                  ),
+                ),
+                const SizedBox(width: Spacing.xxs),
+                Expanded(
+                  child: _buildTabButton(
+                    tab: NavigationDrawerTab.annotations,
                     theme: theme,
                   ),
                 ),
@@ -193,13 +204,17 @@ class _ReaderNavigationDrawerState
     return InkWell(
       onTap: () {
         if (_activeTab != tab) {
-          setState(() => _activeTab = tab);
+          setState(() {
+            _activeTab = tab;
+            _searchController.clear();
+            _filterQuery = '';
+          });
         }
       },
       borderRadius: BorderRadius.circular(Radii.sm),
       child: Container(
         padding: const EdgeInsets.symmetric(
-          horizontal: Spacing.sm,
+          horizontal: Spacing.xxs,
           vertical: Spacing.xs,
         ),
         decoration: BoxDecoration(
@@ -215,22 +230,22 @@ class _ReaderNavigationDrawerState
               isSelected
                   ? (tab == NavigationDrawerTab.bookmarks
                       ? PhosphorIconsFill.bookmarkSimple
-                      : PhosphorIconsFill.listBullets)
+                      : tab == NavigationDrawerTab.annotations
+                          ? PhosphorIconsFill.highlighterCircle
+                          : PhosphorIconsFill.listBullets)
                   : tab.icon,
               size: 16,
               color: isSelected ? theme.accent : theme.textMuted,
             ),
-            const SizedBox(width: Spacing.xs),
+            const SizedBox(width: Spacing.xxs),
             Flexible(
-              child: Text(
-                tab.label,
+              child: AppleMarqueeText(
+                text: tab.label,
                 style: AppTypography.headline.copyWith(
-                  fontSize: 13,
+                  fontSize: 12,
                   color: isSelected ? theme.accent : theme.textMuted,
                   fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
@@ -628,26 +643,383 @@ class _ReaderNavigationDrawerState
   }
 
   Widget _buildAnnotationsTab(ReaderThemeData theme) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          PhosphorIcon(
-            PhosphorIconsLight.highlighterCircle,
-            size: 48,
-            color: theme.textMuted,
+    final highlightsAsync =
+        ref.watch(highlightsStreamProvider(widget.documentId));
+
+    return Column(
+      children: [
+        // Search Filter Input
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Spacing.md,
+            vertical: Spacing.xs,
           ),
-          const SizedBox(height: Spacing.sm),
-          Text(
-            'Notes & Highlights',
-            style: AppTypography.headline.copyWith(color: theme.textPrimary),
+          child: TextField(
+            controller: _searchController,
+            focusNode: _searchFocusNode,
+            onChanged: (val) => setState(() => _filterQuery = val.trim()),
+            style: AppTypography.body.copyWith(color: theme.textPrimary),
+            decoration: InputDecoration(
+              hintText: 'Search notes & highlights...',
+              hintStyle: AppTypography.body.copyWith(color: theme.textMuted),
+              prefixIcon: PhosphorIcon(
+                PhosphorIconsLight.magnifyingGlass,
+                size: 16,
+                color: theme.textMuted,
+              ),
+              suffixIcon: _searchController.text.isNotEmpty
+                  ? IconButton(
+                      tooltip: 'Clear search',
+                      icon: PhosphorIcon(
+                        PhosphorIconsLight.x,
+                        size: 16,
+                        color: theme.textMuted,
+                      ),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() => _filterQuery = '');
+                      },
+                    )
+                  : null,
+              isDense: true,
+              filled: true,
+              fillColor: theme.bgCanvas,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(Radii.sm),
+                borderSide: BorderSide(color: theme.borderSubtle),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(Radii.sm),
+                borderSide: BorderSide(color: theme.borderSubtle),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(Radii.sm),
+                borderSide: BorderSide(color: theme.accent, width: 1.5),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: Spacing.sm,
+                vertical: Spacing.xs,
+              ),
+            ),
           ),
-          const SizedBox(height: Spacing.xxs),
-          Text(
-            'Coming soon in a future update.',
-            style: AppTypography.micro.copyWith(color: theme.textMuted),
+        ),
+
+        Expanded(
+          child: highlightsAsync.when(
+            loading: () => Center(
+              child: Text(
+                'Loading Annotations...',
+                style: AppTypography.micro.copyWith(color: theme.textMuted),
+              ),
+            ),
+            error: (err, _) => Center(
+              child: Padding(
+                padding: const EdgeInsets.all(Spacing.md),
+                child: Text(
+                  'Failed to load Annotations: $err',
+                  style: AppTypography.body.copyWith(color: theme.textMuted),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+            data: (highlights) {
+              if (highlights.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      PhosphorIcon(
+                        PhosphorIconsLight.highlighterCircle,
+                        size: 48,
+                        color: theme.textMuted,
+                      ),
+                      const SizedBox(height: Spacing.sm),
+                      Text(
+                        'No Highlights or Notes Yet',
+                        style: AppTypography.headline.copyWith(
+                          color: theme.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: Spacing.xxs),
+                      Padding(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: Spacing.xl),
+                        child: Text(
+                          'Select any text in the reader to highlight or add notes.',
+                          style: AppTypography.micro
+                              .copyWith(color: theme.textMuted),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              final query = _filterQuery.toLowerCase();
+              final filtered = query.isEmpty
+                  ? highlights
+                  : highlights.where((h) {
+                      final textMatches =
+                          h.highlightedText.toLowerCase().contains(query);
+                      final noteMatches =
+                          h.note?.toLowerCase().contains(query) ?? false;
+                      return textMatches || noteMatches;
+                    }).toList();
+
+              if (filtered.isEmpty) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(Spacing.md),
+                    child: Text(
+                      'No matching highlights or notes.',
+                      style:
+                          AppTypography.body.copyWith(color: theme.textMuted),
+                    ),
+                  ),
+                );
+              }
+
+              return ListView.separated(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Spacing.sm,
+                  vertical: Spacing.xs,
+                ),
+                itemCount: filtered.length,
+                separatorBuilder: (_, _) => const SizedBox(height: Spacing.xs),
+                itemBuilder: (context, index) {
+                  final highlight = filtered[index];
+                  return _buildHighlightCard(
+                    theme: theme,
+                    highlight: highlight,
+                  );
+                },
+              );
+            },
           ),
-        ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHighlightCard({
+    required ReaderThemeData theme,
+    required Highlight highlight,
+  }) {
+    final chapterTitleAsync = ref.watch(
+      documentChapterTitleProvider((
+        filePath: widget.filePath,
+        chapterIndex: highlight.startAnchor.chapterIndex,
+      )),
+    );
+    final chapterTitle = chapterTitleAsync.asData?.value;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.bgCanvas,
+        borderRadius: BorderRadius.circular(Radii.sm),
+        border: Border.all(color: theme.borderSubtle),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(Radii.sm),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(Radii.sm),
+          onTap: () {
+            if (widget.onSelectAnchor != null) {
+              widget.onSelectAnchor!(highlight.startAnchor);
+            } else {
+              widget.onSelectPage(highlight.startAnchor.chapterIndex);
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(Spacing.sm),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header row: Color indicator, Chapter title, and Action buttons
+                Row(
+                  children: [
+                    // Color indicator
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: highlight.isUnderline
+                            ? Colors.transparent
+                            : highlight.displayColor,
+                        shape: BoxShape.circle,
+                        border: highlight.isUnderline
+                            ? Border.all(color: theme.accent, width: 1.5)
+                            : Border.all(color: Colors.black26, width: 0.8),
+                      ),
+                      child: highlight.isUnderline
+                          ? Center(
+                              child: Text(
+                                'U',
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.bold,
+                                  color: theme.accent,
+                                  decoration: TextDecoration.underline,
+                                ),
+                              ),
+                            )
+                          : null,
+                    ),
+                    const SizedBox(width: Spacing.xs),
+                    Expanded(
+                      child: Text(
+                        chapterTitle?.isNotEmpty == true
+                            ? chapterTitle!
+                            : 'Chapter ${highlight.startAnchor.chapterIndex + 1}',
+                        style: AppTypography.headline.copyWith(
+                          fontSize: 13,
+                          color: theme.textPrimary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    // Edit Note Button
+                    IconButton(
+                      tooltip:
+                          highlight.note != null ? 'Edit note' : 'Add note',
+                      icon: PhosphorIcon(
+                        highlight.note != null
+                            ? PhosphorIconsFill.chatTeardropText
+                            : PhosphorIconsLight.chatTeardropText,
+                        size: 16,
+                        color: highlight.note != null
+                            ? theme.accent
+                            : theme.textMuted,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () {
+                        HighlightNoteDialog.show(
+                          context,
+                          selectedText: highlight.highlightedText,
+                          initialColorHex: highlight.colorHex,
+                          initialNote: highlight.note,
+                          onSave: (colorHex, note) async {
+                            await ref
+                                .read(highlightsControllerProvider)
+                                .updateNote(
+                                  highlight.id,
+                                  note.isNotEmpty ? note : null,
+                                );
+                            await ref
+                                .read(highlightsControllerProvider)
+                                .updateColor(
+                                  highlight.id,
+                                  colorHex,
+                                );
+                          },
+                          onDelete: () async {
+                            await ref
+                                .read(highlightsControllerProvider)
+                                .deleteHighlight(highlight.id);
+                          },
+                        );
+                      },
+                    ),
+                    const SizedBox(width: Spacing.xs),
+                    // Delete Highlight Button
+                    IconButton(
+                      tooltip: 'Delete highlight',
+                      icon: PhosphorIcon(
+                        PhosphorIconsLight.trash,
+                        size: 16,
+                        color: theme.textMuted,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () {
+                        ref
+                            .read(highlightsControllerProvider)
+                            .deleteHighlight(highlight.id);
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: Spacing.xxs),
+
+                // Quoted excerpt
+                Container(
+                  padding: const EdgeInsets.only(left: Spacing.xs),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      left: BorderSide(
+                        color: highlight.displayColor,
+                        width: 2.5,
+                      ),
+                    ),
+                  ),
+                  child: Text(
+                    '“${highlight.highlightedText}”',
+                    style: AppTypography.body.copyWith(
+                      fontSize: 12,
+                      color: theme.textPrimary,
+                      fontStyle: FontStyle.italic,
+                    ),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+
+                // User note bubble if present
+                if (highlight.note != null && highlight.note!.isNotEmpty) ...[
+                  const SizedBox(height: Spacing.xs),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Spacing.sm,
+                      vertical: Spacing.xs,
+                    ),
+                    decoration: BoxDecoration(
+                      color: theme.bgCard,
+                      borderRadius: BorderRadius.circular(Radii.sm),
+                      border: Border.all(color: theme.borderSubtle),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        PhosphorIcon(
+                          PhosphorIconsFill.notePencil,
+                          size: 13,
+                          color: theme.accent,
+                        ),
+                        const SizedBox(width: Spacing.xs),
+                        Expanded(
+                          child: Text(
+                            highlight.note!,
+                            style: AppTypography.body.copyWith(
+                              fontSize: 12,
+                              color: theme.textPrimary,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: Spacing.xs),
+
+                // Timestamp
+                Text(
+                  _formatDate(highlight.createdAt),
+                  style: AppTypography.micro.copyWith(
+                    color: theme.textMuted.withValues(alpha: 0.7),
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

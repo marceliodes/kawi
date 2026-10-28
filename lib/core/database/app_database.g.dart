@@ -2388,6 +2388,749 @@ class BookmarksCompanion extends UpdateCompanion<BookmarkEntry> {
   }
 }
 
+class $HighlightsTable extends Highlights
+    with TableInfo<$HighlightsTable, HighlightEntry> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $HighlightsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _documentIdMeta = const VerificationMeta(
+    'documentId',
+  );
+  @override
+  late final GeneratedColumn<String> documentId = GeneratedColumn<String>(
+    'document_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES documents (id) ON DELETE CASCADE',
+    ),
+  );
+  static const VerificationMeta _startChapterIndexMeta = const VerificationMeta(
+    'startChapterIndex',
+  );
+  @override
+  late final GeneratedColumn<int> startChapterIndex = GeneratedColumn<int>(
+    'start_chapter_index',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _startParagraphIndexMeta =
+      const VerificationMeta('startParagraphIndex');
+  @override
+  late final GeneratedColumn<int> startParagraphIndex = GeneratedColumn<int>(
+    'start_paragraph_index',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _startCharOffsetMeta = const VerificationMeta(
+    'startCharOffset',
+  );
+  @override
+  late final GeneratedColumn<int> startCharOffset = GeneratedColumn<int>(
+    'start_char_offset',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _endChapterIndexMeta = const VerificationMeta(
+    'endChapterIndex',
+  );
+  @override
+  late final GeneratedColumn<int> endChapterIndex = GeneratedColumn<int>(
+    'end_chapter_index',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _endParagraphIndexMeta = const VerificationMeta(
+    'endParagraphIndex',
+  );
+  @override
+  late final GeneratedColumn<int> endParagraphIndex = GeneratedColumn<int>(
+    'end_paragraph_index',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _endCharOffsetMeta = const VerificationMeta(
+    'endCharOffset',
+  );
+  @override
+  late final GeneratedColumn<int> endCharOffset = GeneratedColumn<int>(
+    'end_char_offset',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _highlightedTextMeta = const VerificationMeta(
+    'highlightedText',
+  );
+  @override
+  late final GeneratedColumn<String> highlightedText = GeneratedColumn<String>(
+    'highlighted_text',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _colorHexMeta = const VerificationMeta(
+    'colorHex',
+  );
+  @override
+  late final GeneratedColumn<String> colorHex = GeneratedColumn<String>(
+    'color_hex',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _noteMeta = const VerificationMeta('note');
+  @override
+  late final GeneratedColumn<String> note = GeneratedColumn<String>(
+    'note',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    documentId,
+    startChapterIndex,
+    startParagraphIndex,
+    startCharOffset,
+    endChapterIndex,
+    endParagraphIndex,
+    endCharOffset,
+    highlightedText,
+    colorHex,
+    note,
+    createdAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'highlights';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<HighlightEntry> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('document_id')) {
+      context.handle(
+        _documentIdMeta,
+        documentId.isAcceptableOrUnknown(data['document_id']!, _documentIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_documentIdMeta);
+    }
+    if (data.containsKey('start_chapter_index')) {
+      context.handle(
+        _startChapterIndexMeta,
+        startChapterIndex.isAcceptableOrUnknown(
+          data['start_chapter_index']!,
+          _startChapterIndexMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_startChapterIndexMeta);
+    }
+    if (data.containsKey('start_paragraph_index')) {
+      context.handle(
+        _startParagraphIndexMeta,
+        startParagraphIndex.isAcceptableOrUnknown(
+          data['start_paragraph_index']!,
+          _startParagraphIndexMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_startParagraphIndexMeta);
+    }
+    if (data.containsKey('start_char_offset')) {
+      context.handle(
+        _startCharOffsetMeta,
+        startCharOffset.isAcceptableOrUnknown(
+          data['start_char_offset']!,
+          _startCharOffsetMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_startCharOffsetMeta);
+    }
+    if (data.containsKey('end_chapter_index')) {
+      context.handle(
+        _endChapterIndexMeta,
+        endChapterIndex.isAcceptableOrUnknown(
+          data['end_chapter_index']!,
+          _endChapterIndexMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_endChapterIndexMeta);
+    }
+    if (data.containsKey('end_paragraph_index')) {
+      context.handle(
+        _endParagraphIndexMeta,
+        endParagraphIndex.isAcceptableOrUnknown(
+          data['end_paragraph_index']!,
+          _endParagraphIndexMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_endParagraphIndexMeta);
+    }
+    if (data.containsKey('end_char_offset')) {
+      context.handle(
+        _endCharOffsetMeta,
+        endCharOffset.isAcceptableOrUnknown(
+          data['end_char_offset']!,
+          _endCharOffsetMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_endCharOffsetMeta);
+    }
+    if (data.containsKey('highlighted_text')) {
+      context.handle(
+        _highlightedTextMeta,
+        highlightedText.isAcceptableOrUnknown(
+          data['highlighted_text']!,
+          _highlightedTextMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_highlightedTextMeta);
+    }
+    if (data.containsKey('color_hex')) {
+      context.handle(
+        _colorHexMeta,
+        colorHex.isAcceptableOrUnknown(data['color_hex']!, _colorHexMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_colorHexMeta);
+    }
+    if (data.containsKey('note')) {
+      context.handle(
+        _noteMeta,
+        note.isAcceptableOrUnknown(data['note']!, _noteMeta),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  HighlightEntry map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return HighlightEntry(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      documentId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}document_id'],
+      )!,
+      startChapterIndex: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}start_chapter_index'],
+      )!,
+      startParagraphIndex: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}start_paragraph_index'],
+      )!,
+      startCharOffset: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}start_char_offset'],
+      )!,
+      endChapterIndex: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}end_chapter_index'],
+      )!,
+      endParagraphIndex: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}end_paragraph_index'],
+      )!,
+      endCharOffset: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}end_char_offset'],
+      )!,
+      highlightedText: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}highlighted_text'],
+      )!,
+      colorHex: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}color_hex'],
+      )!,
+      note: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}note'],
+      ),
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+    );
+  }
+
+  @override
+  $HighlightsTable createAlias(String alias) {
+    return $HighlightsTable(attachedDatabase, alias);
+  }
+}
+
+class HighlightEntry extends DataClass implements Insertable<HighlightEntry> {
+  final String id;
+  final String documentId;
+  final int startChapterIndex;
+  final int startParagraphIndex;
+  final int startCharOffset;
+  final int endChapterIndex;
+  final int endParagraphIndex;
+  final int endCharOffset;
+  final String highlightedText;
+  final String colorHex;
+  final String? note;
+  final DateTime createdAt;
+  const HighlightEntry({
+    required this.id,
+    required this.documentId,
+    required this.startChapterIndex,
+    required this.startParagraphIndex,
+    required this.startCharOffset,
+    required this.endChapterIndex,
+    required this.endParagraphIndex,
+    required this.endCharOffset,
+    required this.highlightedText,
+    required this.colorHex,
+    this.note,
+    required this.createdAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['document_id'] = Variable<String>(documentId);
+    map['start_chapter_index'] = Variable<int>(startChapterIndex);
+    map['start_paragraph_index'] = Variable<int>(startParagraphIndex);
+    map['start_char_offset'] = Variable<int>(startCharOffset);
+    map['end_chapter_index'] = Variable<int>(endChapterIndex);
+    map['end_paragraph_index'] = Variable<int>(endParagraphIndex);
+    map['end_char_offset'] = Variable<int>(endCharOffset);
+    map['highlighted_text'] = Variable<String>(highlightedText);
+    map['color_hex'] = Variable<String>(colorHex);
+    if (!nullToAbsent || note != null) {
+      map['note'] = Variable<String>(note);
+    }
+    map['created_at'] = Variable<DateTime>(createdAt);
+    return map;
+  }
+
+  HighlightsCompanion toCompanion(bool nullToAbsent) {
+    return HighlightsCompanion(
+      id: Value(id),
+      documentId: Value(documentId),
+      startChapterIndex: Value(startChapterIndex),
+      startParagraphIndex: Value(startParagraphIndex),
+      startCharOffset: Value(startCharOffset),
+      endChapterIndex: Value(endChapterIndex),
+      endParagraphIndex: Value(endParagraphIndex),
+      endCharOffset: Value(endCharOffset),
+      highlightedText: Value(highlightedText),
+      colorHex: Value(colorHex),
+      note: note == null && nullToAbsent ? const Value.absent() : Value(note),
+      createdAt: Value(createdAt),
+    );
+  }
+
+  factory HighlightEntry.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return HighlightEntry(
+      id: serializer.fromJson<String>(json['id']),
+      documentId: serializer.fromJson<String>(json['documentId']),
+      startChapterIndex: serializer.fromJson<int>(json['startChapterIndex']),
+      startParagraphIndex: serializer.fromJson<int>(
+        json['startParagraphIndex'],
+      ),
+      startCharOffset: serializer.fromJson<int>(json['startCharOffset']),
+      endChapterIndex: serializer.fromJson<int>(json['endChapterIndex']),
+      endParagraphIndex: serializer.fromJson<int>(json['endParagraphIndex']),
+      endCharOffset: serializer.fromJson<int>(json['endCharOffset']),
+      highlightedText: serializer.fromJson<String>(json['highlightedText']),
+      colorHex: serializer.fromJson<String>(json['colorHex']),
+      note: serializer.fromJson<String?>(json['note']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'documentId': serializer.toJson<String>(documentId),
+      'startChapterIndex': serializer.toJson<int>(startChapterIndex),
+      'startParagraphIndex': serializer.toJson<int>(startParagraphIndex),
+      'startCharOffset': serializer.toJson<int>(startCharOffset),
+      'endChapterIndex': serializer.toJson<int>(endChapterIndex),
+      'endParagraphIndex': serializer.toJson<int>(endParagraphIndex),
+      'endCharOffset': serializer.toJson<int>(endCharOffset),
+      'highlightedText': serializer.toJson<String>(highlightedText),
+      'colorHex': serializer.toJson<String>(colorHex),
+      'note': serializer.toJson<String?>(note),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+    };
+  }
+
+  HighlightEntry copyWith({
+    String? id,
+    String? documentId,
+    int? startChapterIndex,
+    int? startParagraphIndex,
+    int? startCharOffset,
+    int? endChapterIndex,
+    int? endParagraphIndex,
+    int? endCharOffset,
+    String? highlightedText,
+    String? colorHex,
+    Value<String?> note = const Value.absent(),
+    DateTime? createdAt,
+  }) => HighlightEntry(
+    id: id ?? this.id,
+    documentId: documentId ?? this.documentId,
+    startChapterIndex: startChapterIndex ?? this.startChapterIndex,
+    startParagraphIndex: startParagraphIndex ?? this.startParagraphIndex,
+    startCharOffset: startCharOffset ?? this.startCharOffset,
+    endChapterIndex: endChapterIndex ?? this.endChapterIndex,
+    endParagraphIndex: endParagraphIndex ?? this.endParagraphIndex,
+    endCharOffset: endCharOffset ?? this.endCharOffset,
+    highlightedText: highlightedText ?? this.highlightedText,
+    colorHex: colorHex ?? this.colorHex,
+    note: note.present ? note.value : this.note,
+    createdAt: createdAt ?? this.createdAt,
+  );
+  HighlightEntry copyWithCompanion(HighlightsCompanion data) {
+    return HighlightEntry(
+      id: data.id.present ? data.id.value : this.id,
+      documentId: data.documentId.present
+          ? data.documentId.value
+          : this.documentId,
+      startChapterIndex: data.startChapterIndex.present
+          ? data.startChapterIndex.value
+          : this.startChapterIndex,
+      startParagraphIndex: data.startParagraphIndex.present
+          ? data.startParagraphIndex.value
+          : this.startParagraphIndex,
+      startCharOffset: data.startCharOffset.present
+          ? data.startCharOffset.value
+          : this.startCharOffset,
+      endChapterIndex: data.endChapterIndex.present
+          ? data.endChapterIndex.value
+          : this.endChapterIndex,
+      endParagraphIndex: data.endParagraphIndex.present
+          ? data.endParagraphIndex.value
+          : this.endParagraphIndex,
+      endCharOffset: data.endCharOffset.present
+          ? data.endCharOffset.value
+          : this.endCharOffset,
+      highlightedText: data.highlightedText.present
+          ? data.highlightedText.value
+          : this.highlightedText,
+      colorHex: data.colorHex.present ? data.colorHex.value : this.colorHex,
+      note: data.note.present ? data.note.value : this.note,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('HighlightEntry(')
+          ..write('id: $id, ')
+          ..write('documentId: $documentId, ')
+          ..write('startChapterIndex: $startChapterIndex, ')
+          ..write('startParagraphIndex: $startParagraphIndex, ')
+          ..write('startCharOffset: $startCharOffset, ')
+          ..write('endChapterIndex: $endChapterIndex, ')
+          ..write('endParagraphIndex: $endParagraphIndex, ')
+          ..write('endCharOffset: $endCharOffset, ')
+          ..write('highlightedText: $highlightedText, ')
+          ..write('colorHex: $colorHex, ')
+          ..write('note: $note, ')
+          ..write('createdAt: $createdAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    documentId,
+    startChapterIndex,
+    startParagraphIndex,
+    startCharOffset,
+    endChapterIndex,
+    endParagraphIndex,
+    endCharOffset,
+    highlightedText,
+    colorHex,
+    note,
+    createdAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is HighlightEntry &&
+          other.id == this.id &&
+          other.documentId == this.documentId &&
+          other.startChapterIndex == this.startChapterIndex &&
+          other.startParagraphIndex == this.startParagraphIndex &&
+          other.startCharOffset == this.startCharOffset &&
+          other.endChapterIndex == this.endChapterIndex &&
+          other.endParagraphIndex == this.endParagraphIndex &&
+          other.endCharOffset == this.endCharOffset &&
+          other.highlightedText == this.highlightedText &&
+          other.colorHex == this.colorHex &&
+          other.note == this.note &&
+          other.createdAt == this.createdAt);
+}
+
+class HighlightsCompanion extends UpdateCompanion<HighlightEntry> {
+  final Value<String> id;
+  final Value<String> documentId;
+  final Value<int> startChapterIndex;
+  final Value<int> startParagraphIndex;
+  final Value<int> startCharOffset;
+  final Value<int> endChapterIndex;
+  final Value<int> endParagraphIndex;
+  final Value<int> endCharOffset;
+  final Value<String> highlightedText;
+  final Value<String> colorHex;
+  final Value<String?> note;
+  final Value<DateTime> createdAt;
+  final Value<int> rowid;
+  const HighlightsCompanion({
+    this.id = const Value.absent(),
+    this.documentId = const Value.absent(),
+    this.startChapterIndex = const Value.absent(),
+    this.startParagraphIndex = const Value.absent(),
+    this.startCharOffset = const Value.absent(),
+    this.endChapterIndex = const Value.absent(),
+    this.endParagraphIndex = const Value.absent(),
+    this.endCharOffset = const Value.absent(),
+    this.highlightedText = const Value.absent(),
+    this.colorHex = const Value.absent(),
+    this.note = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  HighlightsCompanion.insert({
+    required String id,
+    required String documentId,
+    required int startChapterIndex,
+    required int startParagraphIndex,
+    required int startCharOffset,
+    required int endChapterIndex,
+    required int endParagraphIndex,
+    required int endCharOffset,
+    required String highlightedText,
+    required String colorHex,
+    this.note = const Value.absent(),
+    required DateTime createdAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       documentId = Value(documentId),
+       startChapterIndex = Value(startChapterIndex),
+       startParagraphIndex = Value(startParagraphIndex),
+       startCharOffset = Value(startCharOffset),
+       endChapterIndex = Value(endChapterIndex),
+       endParagraphIndex = Value(endParagraphIndex),
+       endCharOffset = Value(endCharOffset),
+       highlightedText = Value(highlightedText),
+       colorHex = Value(colorHex),
+       createdAt = Value(createdAt);
+  static Insertable<HighlightEntry> custom({
+    Expression<String>? id,
+    Expression<String>? documentId,
+    Expression<int>? startChapterIndex,
+    Expression<int>? startParagraphIndex,
+    Expression<int>? startCharOffset,
+    Expression<int>? endChapterIndex,
+    Expression<int>? endParagraphIndex,
+    Expression<int>? endCharOffset,
+    Expression<String>? highlightedText,
+    Expression<String>? colorHex,
+    Expression<String>? note,
+    Expression<DateTime>? createdAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (documentId != null) 'document_id': documentId,
+      if (startChapterIndex != null) 'start_chapter_index': startChapterIndex,
+      if (startParagraphIndex != null)
+        'start_paragraph_index': startParagraphIndex,
+      if (startCharOffset != null) 'start_char_offset': startCharOffset,
+      if (endChapterIndex != null) 'end_chapter_index': endChapterIndex,
+      if (endParagraphIndex != null) 'end_paragraph_index': endParagraphIndex,
+      if (endCharOffset != null) 'end_char_offset': endCharOffset,
+      if (highlightedText != null) 'highlighted_text': highlightedText,
+      if (colorHex != null) 'color_hex': colorHex,
+      if (note != null) 'note': note,
+      if (createdAt != null) 'created_at': createdAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  HighlightsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? documentId,
+    Value<int>? startChapterIndex,
+    Value<int>? startParagraphIndex,
+    Value<int>? startCharOffset,
+    Value<int>? endChapterIndex,
+    Value<int>? endParagraphIndex,
+    Value<int>? endCharOffset,
+    Value<String>? highlightedText,
+    Value<String>? colorHex,
+    Value<String?>? note,
+    Value<DateTime>? createdAt,
+    Value<int>? rowid,
+  }) {
+    return HighlightsCompanion(
+      id: id ?? this.id,
+      documentId: documentId ?? this.documentId,
+      startChapterIndex: startChapterIndex ?? this.startChapterIndex,
+      startParagraphIndex: startParagraphIndex ?? this.startParagraphIndex,
+      startCharOffset: startCharOffset ?? this.startCharOffset,
+      endChapterIndex: endChapterIndex ?? this.endChapterIndex,
+      endParagraphIndex: endParagraphIndex ?? this.endParagraphIndex,
+      endCharOffset: endCharOffset ?? this.endCharOffset,
+      highlightedText: highlightedText ?? this.highlightedText,
+      colorHex: colorHex ?? this.colorHex,
+      note: note ?? this.note,
+      createdAt: createdAt ?? this.createdAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (documentId.present) {
+      map['document_id'] = Variable<String>(documentId.value);
+    }
+    if (startChapterIndex.present) {
+      map['start_chapter_index'] = Variable<int>(startChapterIndex.value);
+    }
+    if (startParagraphIndex.present) {
+      map['start_paragraph_index'] = Variable<int>(startParagraphIndex.value);
+    }
+    if (startCharOffset.present) {
+      map['start_char_offset'] = Variable<int>(startCharOffset.value);
+    }
+    if (endChapterIndex.present) {
+      map['end_chapter_index'] = Variable<int>(endChapterIndex.value);
+    }
+    if (endParagraphIndex.present) {
+      map['end_paragraph_index'] = Variable<int>(endParagraphIndex.value);
+    }
+    if (endCharOffset.present) {
+      map['end_char_offset'] = Variable<int>(endCharOffset.value);
+    }
+    if (highlightedText.present) {
+      map['highlighted_text'] = Variable<String>(highlightedText.value);
+    }
+    if (colorHex.present) {
+      map['color_hex'] = Variable<String>(colorHex.value);
+    }
+    if (note.present) {
+      map['note'] = Variable<String>(note.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('HighlightsCompanion(')
+          ..write('id: $id, ')
+          ..write('documentId: $documentId, ')
+          ..write('startChapterIndex: $startChapterIndex, ')
+          ..write('startParagraphIndex: $startParagraphIndex, ')
+          ..write('startCharOffset: $startCharOffset, ')
+          ..write('endChapterIndex: $endChapterIndex, ')
+          ..write('endParagraphIndex: $endParagraphIndex, ')
+          ..write('endCharOffset: $endCharOffset, ')
+          ..write('highlightedText: $highlightedText, ')
+          ..write('colorHex: $colorHex, ')
+          ..write('note: $note, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -2400,6 +3143,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   );
   late final $AppSettingsTable appSettings = $AppSettingsTable(this);
   late final $BookmarksTable bookmarks = $BookmarksTable(this);
+  late final $HighlightsTable highlights = $HighlightsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -2411,7 +3155,18 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     documentShelves,
     appSettings,
     bookmarks,
+    highlights,
   ];
+  @override
+  StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'documents',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('highlights', kind: UpdateKind.delete)],
+    ),
+  ]);
 }
 
 typedef $$DocumentsTableCreateCompanionBuilder = DocumentsCompanion Function({
@@ -2501,6 +3256,24 @@ final class $$DocumentsTableReferences
     ).filter((f) => f.documentId.id.sqlEquals($_itemColumn<String>('id')!));
 
     final cache = $_typedResult.readTableOrNull(_bookmarksRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
+  static MultiTypedResultKey<$HighlightsTable, List<HighlightEntry>>
+  _highlightsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
+    db.highlights,
+    aliasName: 'documents__id__highlights__document_id',
+  );
+
+  $$HighlightsTableProcessedTableManager get highlightsRefs {
+    final manager = $$HighlightsTableTableManager(
+      $_db,
+      $_db.highlights,
+    ).filter((f) => f.documentId.id.sqlEquals($_itemColumn<String>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_highlightsRefsTable($_db));
     return ProcessedTableManager(
       manager.$state.copyWith(prefetchedData: cache),
     );
@@ -2637,6 +3410,31 @@ class $$DocumentsTableFilterComposer
           }) => $$BookmarksTableFilterComposer(
             $db: $db,
             $table: $db.bookmarks,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<bool> highlightsRefs(
+    Expression<bool> Function($$HighlightsTableFilterComposer f) f,
+  ) {
+    final $$HighlightsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.highlights,
+      getReferencedColumn: (t) => t.documentId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$HighlightsTableFilterComposer(
+            $db: $db,
+            $table: $db.highlights,
             $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
             joinBuilder: joinBuilder,
             $removeJoinBuilderFromRootComposer:
@@ -2835,6 +3633,31 @@ class $$DocumentsTableAnnotationComposer
     );
     return f(composer);
   }
+
+  Expression<T> highlightsRefs<T extends Object>(
+    Expression<T> Function($$HighlightsTableAnnotationComposer a) f,
+  ) {
+    final $$HighlightsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.highlights,
+      getReferencedColumn: (t) => t.documentId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$HighlightsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.highlights,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
 }
 
 class $$DocumentsTableTableManager
@@ -2854,6 +3677,7 @@ class $$DocumentsTableTableManager
             bool readingProgressesRefs,
             bool documentShelvesRefs,
             bool bookmarksRefs,
+            bool highlightsRefs,
           })
         > {
   $$DocumentsTableTableManager(_$AppDatabase db, $DocumentsTable table)
@@ -2936,6 +3760,7 @@ class $$DocumentsTableTableManager
                 readingProgressesRefs = false,
                 documentShelvesRefs = false,
                 bookmarksRefs = false,
+                highlightsRefs = false,
               }) {
                 return PrefetchHooks(
                   db: db,
@@ -2943,6 +3768,7 @@ class $$DocumentsTableTableManager
                     if (readingProgressesRefs) db.readingProgresses,
                     if (documentShelvesRefs) db.documentShelves,
                     if (bookmarksRefs) db.bookmarks,
+                    if (highlightsRefs) db.highlights,
                   ],
                   addJoins: null,
                   getPrefetchedDataCallback: (items) async {
@@ -3010,6 +3836,27 @@ class $$DocumentsTableTableManager
                               ),
                           typedResults: items,
                         ),
+                      if (highlightsRefs)
+                        await $_getPrefetchedData<
+                          DocumentEntry,
+                          $DocumentsTable,
+                          HighlightEntry
+                        >(
+                          currentTable: table,
+                          referencedTable: $$DocumentsTableReferences
+                              ._highlightsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$DocumentsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).highlightsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.documentId == item.id,
+                              ),
+                          typedResults: items,
+                        ),
                     ];
                   },
                 );
@@ -3034,6 +3881,7 @@ typedef $$DocumentsTableProcessedTableManager =
         bool readingProgressesRefs,
         bool documentShelvesRefs,
         bool bookmarksRefs,
+        bool highlightsRefs,
       })
     >;
 typedef $$ReadingProgressesTableCreateCompanionBuilder =
@@ -4549,6 +5397,466 @@ typedef $$BookmarksTableProcessedTableManager =
       BookmarkEntry,
       PrefetchHooks Function({bool documentId})
     >;
+typedef $$HighlightsTableCreateCompanionBuilder = HighlightsCompanion Function({
+  required String id,
+  required String documentId,
+  required int startChapterIndex,
+  required int startParagraphIndex,
+  required int startCharOffset,
+  required int endChapterIndex,
+  required int endParagraphIndex,
+  required int endCharOffset,
+  required String highlightedText,
+  required String colorHex,
+  Value<String?> note,
+  required DateTime createdAt,
+  Value<int> rowid,
+});
+typedef $$HighlightsTableUpdateCompanionBuilder = HighlightsCompanion Function({
+  Value<String> id,
+  Value<String> documentId,
+  Value<int> startChapterIndex,
+  Value<int> startParagraphIndex,
+  Value<int> startCharOffset,
+  Value<int> endChapterIndex,
+  Value<int> endParagraphIndex,
+  Value<int> endCharOffset,
+  Value<String> highlightedText,
+  Value<String> colorHex,
+  Value<String?> note,
+  Value<DateTime> createdAt,
+  Value<int> rowid,
+});
+
+final class $$HighlightsTableReferences
+    extends BaseReferences<_$AppDatabase, $HighlightsTable, HighlightEntry> {
+  $$HighlightsTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $DocumentsTable _documentIdTable(_$AppDatabase db) =>
+      db.documents.createAlias('highlights__document_id__documents__id');
+
+  $$DocumentsTableProcessedTableManager get documentId {
+    final $_column = $_itemColumn<String>('document_id')!;
+
+    final manager = $$DocumentsTableTableManager(
+      $_db,
+      $_db.documents,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_documentIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+}
+
+class $$HighlightsTableFilterComposer
+    extends Composer<_$AppDatabase, $HighlightsTable> {
+  $$HighlightsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get startChapterIndex => $composableBuilder(
+    column: $table.startChapterIndex,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get startParagraphIndex => $composableBuilder(
+    column: $table.startParagraphIndex,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get startCharOffset => $composableBuilder(
+    column: $table.startCharOffset,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get endChapterIndex => $composableBuilder(
+    column: $table.endChapterIndex,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get endParagraphIndex => $composableBuilder(
+    column: $table.endParagraphIndex,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get endCharOffset => $composableBuilder(
+    column: $table.endCharOffset,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get highlightedText => $composableBuilder(
+    column: $table.highlightedText,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get colorHex => $composableBuilder(
+    column: $table.colorHex,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get note => $composableBuilder(
+    column: $table.note,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$DocumentsTableFilterComposer get documentId {
+    final $$DocumentsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.documentId,
+      referencedTable: $db.documents,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$DocumentsTableFilterComposer(
+            $db: $db,
+            $table: $db.documents,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$HighlightsTableOrderingComposer
+    extends Composer<_$AppDatabase, $HighlightsTable> {
+  $$HighlightsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get startChapterIndex => $composableBuilder(
+    column: $table.startChapterIndex,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get startParagraphIndex => $composableBuilder(
+    column: $table.startParagraphIndex,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get startCharOffset => $composableBuilder(
+    column: $table.startCharOffset,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get endChapterIndex => $composableBuilder(
+    column: $table.endChapterIndex,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get endParagraphIndex => $composableBuilder(
+    column: $table.endParagraphIndex,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get endCharOffset => $composableBuilder(
+    column: $table.endCharOffset,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get highlightedText => $composableBuilder(
+    column: $table.highlightedText,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get colorHex => $composableBuilder(
+    column: $table.colorHex,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get note => $composableBuilder(
+    column: $table.note,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$DocumentsTableOrderingComposer get documentId {
+    final $$DocumentsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.documentId,
+      referencedTable: $db.documents,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$DocumentsTableOrderingComposer(
+            $db: $db,
+            $table: $db.documents,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$HighlightsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $HighlightsTable> {
+  $$HighlightsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<int> get startChapterIndex => $composableBuilder(
+    column: $table.startChapterIndex,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get startParagraphIndex => $composableBuilder(
+    column: $table.startParagraphIndex,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get startCharOffset => $composableBuilder(
+    column: $table.startCharOffset,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get endChapterIndex => $composableBuilder(
+    column: $table.endChapterIndex,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get endParagraphIndex => $composableBuilder(
+    column: $table.endParagraphIndex,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get endCharOffset => $composableBuilder(
+    column: $table.endCharOffset,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get highlightedText => $composableBuilder(
+    column: $table.highlightedText,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get colorHex =>
+      $composableBuilder(column: $table.colorHex, builder: (column) => column);
+
+  GeneratedColumn<String> get note =>
+      $composableBuilder(column: $table.note, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  $$DocumentsTableAnnotationComposer get documentId {
+    final $$DocumentsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.documentId,
+      referencedTable: $db.documents,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$DocumentsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.documents,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$HighlightsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $HighlightsTable,
+          HighlightEntry,
+          $$HighlightsTableFilterComposer,
+          $$HighlightsTableOrderingComposer,
+          $$HighlightsTableAnnotationComposer,
+          $$HighlightsTableCreateCompanionBuilder,
+          $$HighlightsTableUpdateCompanionBuilder,
+          (HighlightEntry, $$HighlightsTableReferences),
+          HighlightEntry,
+          PrefetchHooks Function({bool documentId})
+        > {
+  $$HighlightsTableTableManager(_$AppDatabase db, $HighlightsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$HighlightsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$HighlightsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$HighlightsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> documentId = const Value.absent(),
+                Value<int> startChapterIndex = const Value.absent(),
+                Value<int> startParagraphIndex = const Value.absent(),
+                Value<int> startCharOffset = const Value.absent(),
+                Value<int> endChapterIndex = const Value.absent(),
+                Value<int> endParagraphIndex = const Value.absent(),
+                Value<int> endCharOffset = const Value.absent(),
+                Value<String> highlightedText = const Value.absent(),
+                Value<String> colorHex = const Value.absent(),
+                Value<String?> note = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => HighlightsCompanion(
+                id: id,
+                documentId: documentId,
+                startChapterIndex: startChapterIndex,
+                startParagraphIndex: startParagraphIndex,
+                startCharOffset: startCharOffset,
+                endChapterIndex: endChapterIndex,
+                endParagraphIndex: endParagraphIndex,
+                endCharOffset: endCharOffset,
+                highlightedText: highlightedText,
+                colorHex: colorHex,
+                note: note,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String documentId,
+                required int startChapterIndex,
+                required int startParagraphIndex,
+                required int startCharOffset,
+                required int endChapterIndex,
+                required int endParagraphIndex,
+                required int endCharOffset,
+                required String highlightedText,
+                required String colorHex,
+                Value<String?> note = const Value.absent(),
+                required DateTime createdAt,
+                Value<int> rowid = const Value.absent(),
+              }) => HighlightsCompanion.insert(
+                id: id,
+                documentId: documentId,
+                startChapterIndex: startChapterIndex,
+                startParagraphIndex: startParagraphIndex,
+                startCharOffset: startCharOffset,
+                endChapterIndex: endChapterIndex,
+                endParagraphIndex: endParagraphIndex,
+                endCharOffset: endCharOffset,
+                highlightedText: highlightedText,
+                colorHex: colorHex,
+                note: note,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable<$HighlightsTable, HighlightEntry>(table),
+                  $$HighlightsTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({documentId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins:
+                  <
+                    T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic
+                    >
+                  >(state) {
+                    if (documentId) {
+                      state = state.withJoin(
+                        currentTable: table,
+                        currentColumn: table.documentId,
+                        referencedTable: $$HighlightsTableReferences
+                            ._documentIdTable(db),
+                        referencedColumn: $$HighlightsTableReferences
+                            ._documentIdTable(db)
+                            .id,
+                      ) as T;
+                    }
+
+                    return state;
+                  },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$HighlightsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $HighlightsTable,
+      HighlightEntry,
+      $$HighlightsTableFilterComposer,
+      $$HighlightsTableOrderingComposer,
+      $$HighlightsTableAnnotationComposer,
+      $$HighlightsTableCreateCompanionBuilder,
+      $$HighlightsTableUpdateCompanionBuilder,
+      (HighlightEntry, $$HighlightsTableReferences),
+      HighlightEntry,
+      PrefetchHooks Function({bool documentId})
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -4565,4 +5873,6 @@ class $AppDatabaseManager {
       $$AppSettingsTableTableManager(_db, _db.appSettings);
   $$BookmarksTableTableManager get bookmarks =>
       $$BookmarksTableTableManager(_db, _db.bookmarks);
+  $$HighlightsTableTableManager get highlights =>
+      $$HighlightsTableTableManager(_db, _db.highlights);
 }

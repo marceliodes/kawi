@@ -1278,6 +1278,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
                         ),
                         child: ReaderCanvas(
                           key: _canvasKey,
+                          documentId: widget.document.id,
                           filePath: widget.document.filePath,
                           pageCount: widget.document.pageCount,
                           settings: settings,
