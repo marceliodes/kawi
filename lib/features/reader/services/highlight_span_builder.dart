@@ -5,6 +5,7 @@ import '../../../core/theme/reader_theme_data.dart';
 import '../models/document_models.dart';
 import '../models/highlight.dart';
 import '../models/reader_settings.dart';
+import '../models/search_models.dart';
 import '../../tts/models/tts_models.dart';
 
 class HighlightSpanBuilder {
@@ -19,6 +20,8 @@ class HighlightSpanBuilder {
     required int paragraphIndex,
     int sliceCharOffset = 0,
     required List<Highlight> highlights,
+    List<SearchMatch> searchMatches = const [],
+    SearchMatch? activeSearchMatch,
     required ReaderThemeData theme,
     TtsState? ttsState,
     TtsHighlightStyle ttsHighlightStyle = TtsHighlightStyle.background,
@@ -60,7 +63,27 @@ class HighlightSpanBuilder {
       }
     }
 
-    // 2. Identify TTS range if active
+    // 2. Identify search match slices intersecting this node
+    final activeSearchSlices = <({SearchMatch match, int start, int end, bool isActive})>[];
+    for (final m in searchMatches) {
+      if (m.chapterIndex != chapterIndex || m.paragraphIndex != paragraphIndex) {
+        continue;
+      }
+      final nodeStart =
+          (m.startAnchor.charOffset - sliceCharOffset).clamp(0, plainText.length);
+      final nodeEnd =
+          (m.endAnchor.charOffset - sliceCharOffset).clamp(0, plainText.length);
+      if (nodeStart < nodeEnd) {
+        activeSearchSlices.add((
+          match: m,
+          start: nodeStart,
+          end: nodeEnd,
+          isActive: m.id == activeSearchMatch?.id,
+        ));
+      }
+    }
+
+    // 3. Identify TTS range if active
     int ttsStart = -1;
     int ttsEnd = -1;
     if (ttsState != null && (ttsState.isPlaying || ttsState.isPaused)) {
@@ -93,8 +116,8 @@ class HighlightSpanBuilder {
     final hasValidTts =
         ttsStart >= 0 && ttsEnd <= plainText.length && ttsStart < ttsEnd;
 
-    // Fast path: If no user highlights and no TTS, return standard spans immediately
-    if (activeSlices.isEmpty && !hasValidTts) {
+    // Fast path: If no user highlights, no search matches, and no TTS, return standard spans immediately
+    if (activeSlices.isEmpty && activeSearchSlices.isEmpty && !hasValidTts) {
       return TextSpan(
         style: baseStyle,
         children: [
@@ -110,7 +133,7 @@ class HighlightSpanBuilder {
       );
     }
 
-    // 3. Collect and sort all boundary points (from highlights, segments, and TTS)
+    // 4. Collect and sort all boundary points (from segments, highlights, search, and TTS)
     final boundaries = <int>{0, plainText.length};
     var segOffset = 0;
     for (final seg in segments) {
@@ -127,14 +150,24 @@ class HighlightSpanBuilder {
         boundaries.add(s.end);
       }
     }
+    for (final s in activeSearchSlices) {
+      if (s.start >= 0 && s.start <= plainText.length) {
+        boundaries.add(s.start);
+      }
+      if (s.end >= 0 && s.end <= plainText.length) {
+        boundaries.add(s.end);
+      }
+    }
     if (ttsStart >= 0 && ttsEnd <= plainText.length && ttsStart < ttsEnd) {
       boundaries.add(ttsStart);
       boundaries.add(ttsEnd);
     }
     boundaries.removeWhere((b) => b < 0 || b > plainText.length);
+    boundaries.add(0);
+    boundaries.add(plainText.length);
     final sorted = boundaries.toList()..sort();
 
-    // 4. Build spans for each interval [segStart, segEnd]
+    // 5. Build spans for each interval [segStart, segEnd]
     final spans = <InlineSpan>[];
     for (var i = 0; i < sorted.length - 1; i++) {
       final segStart = sorted[i].clamp(0, plainText.length);
@@ -148,6 +181,11 @@ class HighlightSpanBuilder {
 
       // Check for user highlight in this interval (most recently created takes priority if overlapping)
       final matchedSlice = activeSlices
+          .where((s) => s.start <= segStart && s.end >= segEnd)
+          .lastOrNull;
+
+      // Check for search match in this interval
+      final matchedSearchSlice = activeSearchSlices
           .where((s) => s.start <= segStart && s.end >= segEnd)
           .lastOrNull;
 
@@ -168,6 +206,23 @@ class HighlightSpanBuilder {
           decorationThickness = 2.0;
         } else {
           background = hl.getBackgroundTint(isDark: theme.isDark);
+        }
+      }
+
+      if (matchedSearchSlice != null) {
+        if (matchedSearchSlice.isActive) {
+          // Active focused search match: high-contrast amber/orange background with accent underline
+          background = theme.isDark
+              ? const Color(0xFFFF9800).withValues(alpha: 0.75)
+              : const Color(0xFFFF9800).withValues(alpha: 0.60);
+          decoration = TextDecoration.underline;
+          decorationColor = theme.accent;
+          decorationThickness = 2.5;
+        } else {
+          // Passive search match: subtle translucent yellow background
+          background = theme.isDark
+              ? const Color(0xFFFFEB3B).withValues(alpha: 0.35)
+              : const Color(0xFFFFD54F).withValues(alpha: 0.45);
         }
       }
 

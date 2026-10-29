@@ -161,7 +161,7 @@ void main() {
       expect(find.text('Chapter 2: The Journey'), findsOneWidget);
     });
 
-    testWidgets('search query filters highlights by note and highlighted text', (tester) async {
+    testWidgets('search query switches from notes to search results and clear button restores notes view', (tester) async {
       await db.insertHighlight(
         HighlightsCompanion.insert(
           id: 'hl-1',
@@ -225,25 +225,23 @@ void main() {
       expect(find.text('“Call me Ishmael.”'), findsOneWidget);
       expect(find.textContaining('television'), findsOneWidget);
 
-      // Search by note content: "Cyberpunk"
+      // Enter search query into in-book search input
       await tester.enterText(find.byType(TextField), 'Cyberpunk');
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
+      // Body switches to in-book search results view: notes are not rendered in body
       expect(find.text('“Call me Ishmael.”'), findsNothing);
-      expect(find.textContaining('television'), findsOneWidget);
+      expect(find.byTooltip('Clear search'), findsOneWidget);
 
-      // Search by highlighted text: "Ishmael"
-      await tester.enterText(find.byType(TextField), 'Ishmael');
-      await tester.pumpAndSettle();
+      // Tap clear button to return to notes view
+      await tester.tap(find.byTooltip('Clear search'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
+      // Both notes visible again in Notes tab
       expect(find.text('“Call me Ishmael.”'), findsOneWidget);
-      expect(find.textContaining('television'), findsNothing);
-
-      // Search for nonexistent query
-      await tester.enterText(find.byType(TextField), 'Nonexistent query 12345');
-      await tester.pumpAndSettle();
-
-      expect(find.text('No matching highlights or notes.'), findsOneWidget);
+      expect(find.textContaining('television'), findsOneWidget);
     });
 
     testWidgets('tapping highlight card invokes onSelectAnchor callback', (tester) async {

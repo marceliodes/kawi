@@ -4,6 +4,7 @@ import 'package:kawi/core/theme/reader_theme_preset.dart';
 import 'package:kawi/core/theme/reader_theme_tokens.dart';
 import 'package:kawi/features/reader/models/document_models.dart';
 import 'package:kawi/features/reader/models/highlight.dart';
+import 'package:kawi/features/reader/models/search_models.dart';
 import 'package:kawi/features/reader/providers/document_content_provider.dart';
 import 'package:kawi/features/reader/services/highlight_span_builder.dart';
 import 'package:kawi/features/tts/models/tts_models.dart';
@@ -341,6 +342,68 @@ void main() {
         ),
         returnsNormally,
       );
+    });
+
+    test('renders passive search matches with subtle yellow tint and active search matches with high-contrast amber', () {
+      const node = ParagraphNode([
+        TextSegment('The quick brown fox jumps over the quick dog.'),
+      ]);
+      const passiveMatch = SearchMatch(
+        id: 'c0_p0_o4',
+        chapterIndex: 0,
+        paragraphIndex: 0,
+        startAnchor: ReadingAnchor(chapterIndex: 0, paragraphIndex: 0, charOffset: 4),
+        endAnchor: ReadingAnchor(chapterIndex: 0, paragraphIndex: 0, charOffset: 9),
+        matchedText: 'quick',
+        snippet: 'The quick brown fox...',
+        snippetMatchStart: 4,
+        snippetMatchEnd: 9,
+        matchIndexInBook: 0,
+      );
+      const activeMatch = SearchMatch(
+        id: 'c0_p0_o35',
+        chapterIndex: 0,
+        paragraphIndex: 0,
+        startAnchor: ReadingAnchor(chapterIndex: 0, paragraphIndex: 0, charOffset: 35),
+        endAnchor: ReadingAnchor(chapterIndex: 0, paragraphIndex: 0, charOffset: 40),
+        matchedText: 'quick',
+        snippet: '...over the quick dog.',
+        snippetMatchStart: 12,
+        snippetMatchEnd: 17,
+        matchIndexInBook: 1,
+      );
+
+      final span = HighlightSpanBuilder.buildSpans(
+        node: node,
+        baseStyle: baseStyle,
+        chapterIndex: 0,
+        paragraphIndex: 0,
+        highlights: const [],
+        searchMatches: [passiveMatch, activeMatch],
+        activeSearchMatch: activeMatch,
+        theme: theme,
+      );
+
+      final children = span.children!;
+      final passiveSpan = children.firstWhere((c) => (c as TextSpan).text == 'quick') as TextSpan;
+      expect(
+        passiveSpan.style?.backgroundColor,
+        const Color(0xFFFFEB3B).withValues(alpha: 0.35),
+      );
+
+      final activeSpan = children.lastWhere((c) => (c as TextSpan).text == 'quick') as TextSpan;
+      expect(
+        activeSpan.style?.backgroundColor,
+        const Color(0xFFFF9800).withValues(alpha: 0.75),
+      );
+      expect(activeSpan.style?.decoration, TextDecoration.underline);
+      expect(activeSpan.style?.decorationColor, theme.accent);
+
+      // Invariant: zero reflow, child spans do not set fontSize/fontFamily, inheriting root baseStyle
+      expect(activeSpan.style?.fontSize, isNull);
+      expect(activeSpan.style?.fontFamily, isNull);
+      expect(span.style?.fontSize, baseStyle.fontSize);
+      expect(span.style?.fontFamily, baseStyle.fontFamily);
     });
   });
 }

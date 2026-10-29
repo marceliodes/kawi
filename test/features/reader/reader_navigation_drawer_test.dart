@@ -9,9 +9,12 @@ import 'package:kawi/core/database/database_provider.dart';
 import 'package:kawi/core/theme/reader_theme.dart';
 import 'package:kawi/core/theme/reader_theme_preset.dart';
 import 'package:kawi/core/theme/reader_theme_tokens.dart';
+import 'package:kawi/features/reader/models/search_models.dart';
 import 'package:kawi/features/reader/providers/document_content_provider.dart';
+import 'package:kawi/features/reader/providers/search_provider.dart';
 import 'package:kawi/features/reader/services/document_extractor.dart';
 import 'package:kawi/features/reader/widgets/reader_navigation_drawer.dart';
+import 'package:phosphoricons_flutter/phosphoricons_flutter.dart';
 
 Widget _wrapWithTestApp({
   required ProviderContainer container,
@@ -93,7 +96,7 @@ void main() {
       expect(find.text('Chapter 2: The Middle'), findsOneWidget);
     });
 
-    testWidgets('search input has placeholder "Search chapters...", clear button clears query, and Escape clears query before closing drawer', (tester) async {
+    testWidgets('search input has placeholder "Search in book...", switches to search results, clear button resets query, and Escape clears query before closing drawer', (tester) async {
       final sampleToc = [
         const TocEntry(title: 'Chapter 1: The Start', pageIndex: 0),
         const TocEntry(title: 'Chapter 2: The Middle', pageIndex: 1),
@@ -124,18 +127,22 @@ void main() {
       scaffoldState.openDrawer();
       await tester.pumpAndSettle();
 
-      // 1. Placeholder is "Search chapters..."
-      expect(find.text('Search chapters...'), findsOneWidget);
+      // 1. Placeholder is "Search in book..."
+      expect(find.text('Search in book...'), findsOneWidget);
 
       // Trailing clear button should not be visible when text is empty
       expect(find.byTooltip('Clear search'), findsNothing);
 
+      // Verify TOC items are visible when query is empty
+      expect(find.text('Chapter 1: The Start'), findsOneWidget);
+      expect(find.text('Chapter 2: The Middle'), findsOneWidget);
+
       // Type "Middle" into search
       await tester.enterText(find.byType(TextField), 'Middle');
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
-      // Filtered: Chapter 2 is visible, Chapter 1 & 3 are filtered out
-      expect(find.text('Chapter 2: The Middle'), findsOneWidget);
+      // Body switches to search results view: TOC items are no longer shown in body
       expect(find.text('Chapter 1: The Start'), findsNothing);
 
       // Trailing clear button should now be visible
@@ -143,7 +150,8 @@ void main() {
 
       // Tap clear button
       await tester.tap(find.byTooltip('Clear search'));
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
       // Query cleared and all chapters visible again
       expect(find.text('Chapter 1: The Start'), findsOneWidget);
@@ -153,15 +161,16 @@ void main() {
 
       // Type "Start" into search
       await tester.enterText(find.byType(TextField), 'Start');
-      await tester.pumpAndSettle();
-      expect(find.text('Chapter 1: The Start'), findsOneWidget);
-      expect(find.text('Chapter 2: The Middle'), findsNothing);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Chapter 1: The Start'), findsNothing);
 
       // Press Escape key while text is not empty
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
-      // Escape should have cleared query and reset filter, without closing the drawer
+      // Escape should have cleared query and reset to TOC, without closing the drawer
       expect(scaffoldState.isDrawerOpen, isTrue);
       expect(find.text('Chapter 1: The Start'), findsOneWidget);
       expect(find.text('Chapter 2: The Middle'), findsOneWidget);
@@ -201,7 +210,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Tap Bookmarks tab
-      await tester.tap(find.text('Bookmarks'));
+      await tester.tap(find.byIcon(PhosphorIconsLight.bookmarkSimple));
       await tester.pumpAndSettle();
 
       expect(find.text('No Bookmarks Yet'), findsOneWidget);
@@ -293,6 +302,146 @@ void main() {
       // Database should only have 1 bookmark left
       final remaining = await db.getBookmarksForDocument('doc-drawer-test');
       expect(remaining.length, 1);
+    });
+
+    testWidgets('header contains exactly 3 tabs (Contents, Bookmarks, Notes) without Search tab', (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          documentTocProvider.overrideWith((ref, path) => Future.value(const [])),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _wrapWithTestApp(
+          container: container,
+          drawer: ReaderNavigationDrawer(
+            documentId: 'doc-drawer-test',
+            filePath: '/test/drawer.epub',
+            currentPageIndex: 0,
+            onSelectPage: (_) {},
+          ),
+        ),
+      );
+
+      final scaffoldState = tester.state<ScaffoldState>(find.byType(Scaffold));
+      scaffoldState.openDrawer();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Contents'), findsOneWidget);
+      expect(find.text('Bookmarks'), findsOneWidget);
+      expect(find.text('Notes'), findsOneWidget);
+      expect(find.text('Search'), findsNothing);
+    });
+
+    testWidgets('full-text search renders grouped results and tapping snippet triggers onSelectAnchor', (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          documentTocProvider.overrideWith((ref, path) => Future.value(const [])),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      const sampleMatch = SearchMatch(
+        id: 'c0_p1_o10',
+        chapterIndex: 0,
+        chapterTitle: 'Chapter 1: The Beginning',
+        paragraphIndex: 1,
+        startAnchor: ReadingAnchor(chapterIndex: 0, paragraphIndex: 1, charOffset: 10),
+        endAnchor: ReadingAnchor(chapterIndex: 0, paragraphIndex: 1, charOffset: 15),
+        matchedText: 'magic',
+        snippet: 'A world full of magic and mystery awaits.',
+        snippetMatchStart: 16,
+        snippetMatchEnd: 21,
+        matchIndexInBook: 0,
+      );
+
+      ReadingAnchor? clickedAnchor;
+
+      await tester.pumpWidget(
+        _wrapWithTestApp(
+          container: container,
+          drawer: ReaderNavigationDrawer(
+            documentId: 'doc-drawer-test',
+            filePath: '/test/drawer.epub',
+            currentPageIndex: 0,
+            onSelectPage: (_) {},
+            onSelectAnchor: (anchor) => clickedAnchor = anchor,
+          ),
+        ),
+      );
+
+      final scaffoldState = tester.state<ScaffoldState>(find.byType(Scaffold));
+      scaffoldState.openDrawer();
+      await tester.pumpAndSettle();
+
+      // Enter query "magic"
+      await tester.enterText(find.byType(TextField), 'magic');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // Populate search state directly in controller (isSearching: false)
+      container.read(searchControllerProvider.notifier).state = const SearchState(
+        query: 'magic',
+        matches: [sampleMatch],
+        groups: [
+          SearchResultGroup(
+            chapterIndex: 0,
+            chapterTitle: 'Chapter 1: The Beginning',
+            matches: [sampleMatch],
+          ),
+        ],
+        activeMatchIndex: 0,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      // Match count header displayed
+      expect(find.text('1 match found'), findsOneWidget);
+
+      // Chapter header and match snippet displayed
+      expect(find.text('Chapter 1: The Beginning'), findsOneWidget);
+      expect(find.textContaining('mystery', findRichText: true), findsOneWidget);
+
+      // Tap snippet card
+      await tester.tap(find.textContaining('mystery', findRichText: true));
+      await tester.pumpAndSettle();
+
+      // Drawer popped and callback triggered with startAnchor
+      expect(scaffoldState.isDrawerOpen, isFalse);
+      expect(clickedAnchor, equals(sampleMatch.startAnchor));
+    });
+
+    testWidgets('autoFocusSearch: true auto-focuses search text field', (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          documentTocProvider.overrideWith((ref, path) => Future.value(const [])),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        _wrapWithTestApp(
+          container: container,
+          drawer: ReaderNavigationDrawer(
+            documentId: 'doc-drawer-test',
+            filePath: '/test/drawer.epub',
+            currentPageIndex: 0,
+            onSelectPage: (_) {},
+            autoFocusSearch: true,
+          ),
+        ),
+      );
+
+      final scaffoldState = tester.state<ScaffoldState>(find.byType(Scaffold));
+      scaffoldState.openDrawer();
+      await tester.pumpAndSettle();
+
+      final textField = tester.widget<TextField>(find.byType(TextField));
+      expect(textField.focusNode?.hasFocus, isTrue);
     });
   });
 }

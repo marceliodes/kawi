@@ -21,9 +21,11 @@ import '../models/reader_settings.dart';
 import '../providers/document_content_provider.dart';
 import '../providers/highlights_provider.dart';
 import '../providers/reader_settings_provider.dart';
+import '../providers/search_provider.dart';
 import '../services/chapter_paginator.dart';
 import '../services/highlight_span_builder.dart';
 import 'highlight_note_dialog.dart';
+import 'chapter_skeleton_placeholder.dart';
 import 'reader_selection_toolbar.dart';
 import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
@@ -1908,7 +1910,10 @@ class ReaderCanvasState extends ConsumerState<ReaderCanvas> {
           : pagesAsync.when(
               loading: () => Center(
                 key: const ValueKey('paginated_loading'),
-                child: CircularProgressIndicator(color: theme.accent),
+                child: ChapterSkeletonPlaceholder(
+                  columnWidth: columnWidth,
+                  theme: theme,
+                ),
               ),
               error: (err, _) => Center(
                 key: const ValueKey('paginated_error'),
@@ -2962,26 +2967,9 @@ class _ContinuousChapterSectionWidget extends ConsumerWidget {
       )));
 
       child = nodesAsync.when(
-        loading: () => Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _ChapterHeaderWidget(
-              filePath: filePath,
-              chapterIndex: chapterIndex,
-              columnWidth: columnWidth,
-              theme: theme,
-            ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: Spacing.xl),
-              child: Center(
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            ),
-          ],
+        loading: () => ChapterSkeletonPlaceholder(
+          columnWidth: columnWidth,
+          theme: theme,
         ),
         error: (err, _) => Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3179,32 +3167,18 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
 
     final selection = editable.textEditingValue.selection;
     final text = editable.textEditingValue.text;
-    if (selection.isValid &&
-        !selection.isCollapsed &&
-        selection.start >= 0 &&
-        selection.end >= 0 &&
-        selection.end <= text.length &&
-        selection.start < selection.end) {
-      final selectedText = text.substring(selection.start, selection.end);
+    final effectiveSel = (!selection.isCollapsed && selection.isValid) ? selection : _activeSelection;
+    if (effectiveSel != null &&
+        effectiveSel.isValid &&
+        !effectiveSel.isCollapsed &&
+        effectiveSel.start >= 0 &&
+        effectiveSel.end >= 0 &&
+        effectiveSel.end <= text.length &&
+        effectiveSel.start < effectiveSel.end) {
+      final selectedText = text.substring(effectiveSel.start, effectiveSel.end);
       if (selectedText.trim().isNotEmpty) {
-        _activeSelection = selection;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && editable.mounted) {
-            final curSel = editable.textEditingValue.selection;
-            final curText = editable.textEditingValue.text;
-            if (curSel.isValid &&
-                !curSel.isCollapsed &&
-                curSel.start >= 0 &&
-                curSel.end >= 0 &&
-                curSel.end <= curText.length &&
-                curSel.start < curSel.end) {
-              final curSelected = curText.substring(curSel.start, curSel.end);
-              if (curSelected.trim().isNotEmpty) {
-                editable.showToolbar();
-              }
-            }
-          }
-        });
+        _activeSelection = effectiveSel;
+        editable.showToolbar();
       }
     }
   }
@@ -3442,6 +3416,9 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
           )))
         : const <Highlight>[];
 
+    final searchMatches = ref.watch(chapterSearchMatchesProvider(chapterIdx));
+    final activeSearchMatch = ref.watch(activeSearchMatchProvider);
+
     final TextSpan contentSpan = HighlightSpanBuilder.buildSpans(
       node: widget.node,
       baseStyle: effectiveStyle,
@@ -3449,6 +3426,8 @@ class _EpubScopedNodeWidgetState extends ConsumerState<_EpubScopedNodeWidget> {
       paragraphIndex: paragraphIdx,
       sliceCharOffset: sliceOffset,
       highlights: highlights,
+      searchMatches: searchMatches,
+      activeSearchMatch: activeSearchMatch,
       theme: widget.theme,
       ttsState: isMatched ? ttsState : null,
       ttsHighlightStyle: ref.watch(readerSettingsProvider).ttsHighlightStyle,

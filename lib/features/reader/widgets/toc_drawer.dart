@@ -16,6 +16,7 @@ class TocDrawer extends StatelessWidget {
     this.onSelectAnchor,
     this.isPaginated,
     this.initialTab = NavigationDrawerTab.contents,
+    this.autoFocusSearch = false,
   });
 
   final String documentId;
@@ -25,6 +26,7 @@ class TocDrawer extends StatelessWidget {
   final ValueChanged<ReadingAnchor>? onSelectAnchor;
   final bool? isPaginated;
   final NavigationDrawerTab initialTab;
+  final bool autoFocusSearch;
 
   @override
   Widget build(BuildContext context) {
@@ -36,6 +38,7 @@ class TocDrawer extends StatelessWidget {
       onSelectAnchor: onSelectAnchor,
       isPaginated: isPaginated,
       initialTab: initialTab,
+      autoFocusSearch: autoFocusSearch,
     );
   }
 }

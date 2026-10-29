@@ -9,10 +9,12 @@ import '../../../core/theme/typography.dart';
 import '../../../core/widgets/apple_marquee_text.dart';
 import '../models/bookmark.dart';
 import '../models/highlight.dart';
+import '../models/search_models.dart';
 import '../providers/bookmarks_provider.dart';
 import '../providers/document_content_provider.dart';
 import '../providers/highlights_provider.dart';
 import '../providers/reader_settings_provider.dart';
+import '../providers/search_provider.dart';
 import '../services/document_extractor.dart';
 import 'highlight_note_dialog.dart';
 
@@ -54,6 +56,7 @@ class ReaderNavigationDrawer extends ConsumerStatefulWidget {
     this.onSelectAnchor,
     this.isPaginated,
     this.initialTab = NavigationDrawerTab.contents,
+    this.autoFocusSearch = false,
   });
 
   final String documentId;
@@ -63,6 +66,7 @@ class ReaderNavigationDrawer extends ConsumerStatefulWidget {
   final ValueChanged<ReadingAnchor>? onSelectAnchor;
   final bool? isPaginated;
   final NavigationDrawerTab initialTab;
+  final bool autoFocusSearch;
 
   @override
   ConsumerState<ReaderNavigationDrawer> createState() =>
@@ -74,13 +78,18 @@ class _ReaderNavigationDrawerState
   late NavigationDrawerTab _activeTab;
   final TextEditingController _searchController = TextEditingController();
   late final FocusNode _searchFocusNode;
-  String _filterQuery = '';
   bool _wasEscapeHandledOnKeyDown = false;
 
   @override
   void initState() {
     super.initState();
     _activeTab = widget.initialTab;
+    ref.read(searchControllerProvider.notifier).setDocumentFilePath(widget.filePath);
+
+    if (widget.autoFocusSearch) {
+      _searchController.text = ref.read(searchControllerProvider).query;
+    }
+
     _searchFocusNode = FocusNode(
       debugLabel: 'ReaderNavigationDrawerSearchFocusNode',
       onKeyEvent: (node, event) {
@@ -89,7 +98,8 @@ class _ReaderNavigationDrawerState
             if (event is KeyDownEvent) {
               _wasEscapeHandledOnKeyDown = true;
               _searchController.clear();
-              setState(() => _filterQuery = '');
+              ref.read(searchControllerProvider.notifier).clearSearch();
+              setState(() {});
             } else if (event is KeyUpEvent) {
               _wasEscapeHandledOnKeyDown = false;
             }
@@ -99,6 +109,31 @@ class _ReaderNavigationDrawerState
         return KeyEventResult.ignored;
       },
     );
+
+    if (widget.autoFocusSearch) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _searchFocusNode.requestFocus();
+          if (_searchController.text.isNotEmpty) {
+            _searchController.selection = TextSelection(
+              baseOffset: 0,
+              extentOffset: _searchController.text.length,
+            );
+          }
+        }
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ReaderNavigationDrawer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filePath != widget.filePath) {
+      ref.read(searchControllerProvider.notifier).setDocumentFilePath(widget.filePath);
+    }
+    if (widget.autoFocusSearch && !oldWidget.autoFocusSearch) {
+      _searchFocusNode.requestFocus();
+    }
   }
 
   @override
@@ -113,6 +148,8 @@ class _ReaderNavigationDrawerState
     final theme = ReaderTheme.of(context);
     final settings = ref.watch(readerSettingsProvider);
     final showPageNumbers = widget.isPaginated ?? settings.isPaginated;
+    final searchState = ref.watch(searchStateProvider);
+    final isQueryNotEmpty = _searchController.text.trim().isNotEmpty;
 
     return Drawer(
       backgroundColor: theme.bgCard,
@@ -122,21 +159,28 @@ class _ReaderNavigationDrawerState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Drawer Top Bar: Tabs & Close Button
+            // Drawer Top Bar: 3 Tabs & Close Button
             _buildDrawerHeader(theme),
 
             const Divider(height: 1),
 
-            // Drawer Content based on active tab
+            // In-Book Full-Text Search Input
+            _buildSearchInput(theme),
+
+            const Divider(height: 1),
+
+            // Drawer Content: Search Results if query non-empty, else active tab body
             Expanded(
-              child: switch (_activeTab) {
-                NavigationDrawerTab.contents => _buildContentsTab(
-                  theme: theme,
-                  showPageNumbers: showPageNumbers,
-                ),
-                NavigationDrawerTab.bookmarks => _buildBookmarksTab(theme),
-                NavigationDrawerTab.annotations => _buildAnnotationsTab(theme),
-              },
+              child: isQueryNotEmpty
+                  ? _buildSearchResultsBody(theme, searchState)
+                  : switch (_activeTab) {
+                      NavigationDrawerTab.contents => _buildContentsTab(
+                        theme: theme,
+                        showPageNumbers: showPageNumbers,
+                      ),
+                      NavigationDrawerTab.bookmarks => _buildBookmarksTab(theme),
+                      NavigationDrawerTab.annotations => _buildAnnotationsTab(theme),
+                    },
             ),
           ],
         ),
@@ -147,12 +191,12 @@ class _ReaderNavigationDrawerState
   Widget _buildDrawerHeader(ReaderThemeData theme) {
     return Container(
       padding: const EdgeInsets.symmetric(
-        horizontal: Spacing.sm,
+        horizontal: Spacing.xs,
         vertical: Spacing.xs,
       ),
       child: Row(
         children: [
-          // Segmented Tab Selector
+          // Segmented Tab Selector (3 tabs)
           Expanded(
             child: Row(
               children: [
@@ -162,14 +206,14 @@ class _ReaderNavigationDrawerState
                     theme: theme,
                   ),
                 ),
-                const SizedBox(width: Spacing.xxs),
+                const SizedBox(width: 4),
                 Expanded(
                   child: _buildTabButton(
                     tab: NavigationDrawerTab.bookmarks,
                     theme: theme,
                   ),
                 ),
-                const SizedBox(width: Spacing.xxs),
+                const SizedBox(width: 4),
                 Expanded(
                   child: _buildTabButton(
                     tab: NavigationDrawerTab.annotations,
@@ -179,6 +223,7 @@ class _ReaderNavigationDrawerState
               ],
             ),
           ),
+          const SizedBox(width: 4),
 
           // Close Drawer Button
           IconButton(
@@ -188,6 +233,9 @@ class _ReaderNavigationDrawerState
               size: 20,
               color: theme.textMuted,
             ),
+            padding: const EdgeInsets.all(Spacing.xs),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            splashRadius: 16,
             onPressed: () => Navigator.of(context).pop(),
           ),
         ],
@@ -199,23 +247,23 @@ class _ReaderNavigationDrawerState
     required NavigationDrawerTab tab,
     required ReaderThemeData theme,
   }) {
-    final isSelected = _activeTab == tab;
+    final isSelected = _activeTab == tab && _searchController.text.trim().isEmpty;
 
     return InkWell(
       onTap: () {
-        if (_activeTab != tab) {
-          setState(() {
-            _activeTab = tab;
+        setState(() {
+          _activeTab = tab;
+          if (_searchController.text.isNotEmpty) {
             _searchController.clear();
-            _filterQuery = '';
-          });
-        }
+            ref.read(searchControllerProvider.notifier).clearSearch();
+          }
+        });
       },
       borderRadius: BorderRadius.circular(Radii.sm),
       child: Container(
         padding: const EdgeInsets.symmetric(
-          horizontal: Spacing.xxs,
-          vertical: Spacing.xs,
+          horizontal: 4,
+          vertical: 6,
         ),
         decoration: BoxDecoration(
           color: isSelected
@@ -234,21 +282,91 @@ class _ReaderNavigationDrawerState
                           ? PhosphorIconsFill.highlighterCircle
                           : PhosphorIconsFill.listBullets)
                   : tab.icon,
-              size: 16,
+              size: 15.0,
               color: isSelected ? theme.accent : theme.textMuted,
             ),
-            const SizedBox(width: Spacing.xxs),
+            const SizedBox(width: 4),
             Flexible(
               child: AppleMarqueeText(
                 text: tab.label,
                 style: AppTypography.headline.copyWith(
-                  fontSize: 12,
+                  fontSize: 12.0,
                   color: isSelected ? theme.accent : theme.textMuted,
-                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchInput(ReaderThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: Spacing.md,
+        vertical: Spacing.xs,
+      ),
+      child: TextField(
+        controller: _searchController,
+        focusNode: _searchFocusNode,
+        autofocus: widget.autoFocusSearch,
+        onChanged: (val) {
+          setState(() {});
+          ref.read(searchControllerProvider.notifier).onQueryChanged(val);
+        },
+        style: AppTypography.body.copyWith(
+          color: theme.textPrimary,
+          fontSize: 13,
+        ),
+        cursorColor: theme.accent,
+        decoration: InputDecoration(
+          hintText: 'Search in book...',
+          hintStyle: AppTypography.body.copyWith(
+            color: theme.textMuted,
+            fontSize: 13,
+          ),
+          prefixIcon: PhosphorIcon(
+            PhosphorIconsLight.magnifyingGlass,
+            size: 16,
+            color: theme.textMuted,
+          ),
+          suffixIcon: _searchController.text.isNotEmpty
+              ? IconButton(
+                  tooltip: 'Clear search',
+                  icon: PhosphorIcon(
+                    PhosphorIconsLight.x,
+                    size: 16,
+                    color: theme.textMuted,
+                  ),
+                  splashRadius: 14,
+                  onPressed: () {
+                    _searchController.clear();
+                    ref.read(searchControllerProvider.notifier).clearSearch();
+                    setState(() {});
+                  },
+                )
+              : null,
+          isDense: true,
+          filled: true,
+          fillColor: theme.bgCanvas,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(Radii.sm),
+            borderSide: BorderSide(color: theme.borderSubtle),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(Radii.sm),
+            borderSide: BorderSide(color: theme.borderSubtle),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(Radii.sm),
+            borderSide: BorderSide(color: theme.accent, width: 1.5),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: Spacing.sm,
+            vertical: Spacing.xs,
+          ),
         ),
       ),
     );
@@ -260,150 +378,77 @@ class _ReaderNavigationDrawerState
   }) {
     final tocAsync = ref.watch(documentTocProvider(widget.filePath));
 
-    return Column(
-      children: [
-        // Search Filter Input
-        Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: Spacing.md,
-            vertical: Spacing.xs,
-          ),
-          child: TextField(
-            controller: _searchController,
-            focusNode: _searchFocusNode,
-            onChanged: (val) => setState(() => _filterQuery = val.trim()),
-            style: AppTypography.body.copyWith(color: theme.textPrimary),
-            decoration: InputDecoration(
-              hintText: 'Search chapters...',
-              hintStyle: AppTypography.body.copyWith(color: theme.textMuted),
-              prefixIcon: PhosphorIcon(
-                PhosphorIconsLight.magnifyingGlass,
-                size: 16,
-                color: theme.textMuted,
-              ),
-              suffixIcon: _searchController.text.isNotEmpty
-                  ? IconButton(
-                      tooltip: 'Clear search',
-                      icon: PhosphorIcon(
-                        PhosphorIconsLight.x,
-                        size: 16,
-                        color: theme.textMuted,
-                      ),
-                      onPressed: () {
-                        _searchController.clear();
-                        setState(() => _filterQuery = '');
-                      },
-                    )
-                  : null,
-              isDense: true,
-              filled: true,
-              fillColor: theme.bgCanvas,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.sm),
-                borderSide: BorderSide(color: theme.borderSubtle),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.sm),
-                borderSide: BorderSide(color: theme.borderSubtle),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.sm),
-                borderSide: BorderSide(color: theme.accent, width: 1.5),
-              ),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: Spacing.sm,
-                vertical: Spacing.xs,
-              ),
-            ),
+    return tocAsync.when(
+      loading: () => Center(
+        child: Text(
+          'Loading Table of Contents...',
+          style: AppTypography.micro.copyWith(color: theme.textMuted),
+        ),
+      ),
+      error: (err, _) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(Spacing.md),
+          child: Text(
+            'Failed to load Table of Contents: $err',
+            style: AppTypography.body.copyWith(color: theme.textMuted),
+            textAlign: TextAlign.center,
           ),
         ),
-        const Divider(height: Spacing.xs),
-
-        // TOC List
-        Expanded(
-          child: tocAsync.when(
-            loading: () => Center(
-              child: Text(
-                'Loading Table of Contents...',
-                style: AppTypography.micro.copyWith(color: theme.textMuted),
-              ),
-            ),
-            error: (err, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(Spacing.md),
-                child: Text(
-                  'Failed to load Table of Contents: $err',
-                  style: AppTypography.body.copyWith(color: theme.textMuted),
-                  textAlign: TextAlign.center,
+      ),
+      data: (entries) {
+        if (entries.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                PhosphorIcon(
+                  PhosphorIconsLight.bookBookmark,
+                  size: 48,
+                  color: theme.textMuted,
                 ),
-              ),
+                const SizedBox(height: Spacing.sm),
+                Text(
+                  'No Table of Contents',
+                  style: AppTypography.headline.copyWith(
+                    color: theme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: Spacing.xxs),
+                Text(
+                  'This document does not contain outline markers.',
+                  style: AppTypography.micro.copyWith(
+                    color: theme.textMuted,
+                  ),
+                ),
+              ],
             ),
-            data: (entries) {
-              if (entries.isEmpty) {
-                return Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      PhosphorIcon(
-                        PhosphorIconsLight.bookBookmark,
-                        size: 48,
-                        color: theme.textMuted,
-                      ),
-                      const SizedBox(height: Spacing.sm),
-                      Text(
-                        'No Table of Contents',
-                        style: AppTypography.headline.copyWith(
-                          color: theme.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: Spacing.xxs),
-                      Text(
-                        'This document does not contain outline markers.',
-                        style: AppTypography.micro.copyWith(
-                          color: theme.textMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }
+          );
+        }
 
-              final flattened = _flattenAndFilter(entries, _filterQuery);
-              if (flattened.isEmpty) {
-                return Center(
-                  child: Text(
-                    'No matching chapters found.',
-                    style: AppTypography.body.copyWith(color: theme.textMuted),
-                  ),
-                );
-              }
+        final flattened = _flattenToc(entries);
+        _FlattenedTocItem? currentItem;
+        for (final it in flattened) {
+          if (it.entry.pageIndex >= 0 &&
+              it.entry.pageIndex <= widget.currentPageIndex) {
+            currentItem = it;
+          }
+        }
 
-              _FlattenedTocItem? currentItem;
-              for (final it in flattened) {
-                if (it.entry.pageIndex >= 0 &&
-                    it.entry.pageIndex <= widget.currentPageIndex) {
-                  currentItem = it;
-                }
-              }
+        return ListView.builder(
+          itemCount: flattened.length,
+          itemBuilder: (context, index) {
+            final item = flattened[index];
+            final isCurrent = item == currentItem;
 
-              return ListView.builder(
-                itemCount: flattened.length,
-                itemBuilder: (context, index) {
-                  final item = flattened[index];
-                  final isCurrent = item == currentItem;
-
-                  return _buildTocRow(
-                    theme: theme,
-                    item: item,
-                    isCurrent: isCurrent,
-                    showPageNumbers: showPageNumbers,
-                  );
-                },
-              );
-            },
-          ),
-        ),
-      ],
+            return _buildTocRow(
+              theme: theme,
+              item: item,
+              isCurrent: isCurrent,
+              showPageNumbers: showPageNumbers,
+            );
+          },
+        );
+      },
     );
   }
 
@@ -646,159 +691,73 @@ class _ReaderNavigationDrawerState
     final highlightsAsync =
         ref.watch(highlightsStreamProvider(widget.documentId));
 
-    return Column(
-      children: [
-        // Search Filter Input
-        Padding(
+    return highlightsAsync.when(
+      loading: () => Center(
+        child: Text(
+          'Loading Annotations...',
+          style: AppTypography.micro.copyWith(color: theme.textMuted),
+        ),
+      ),
+      error: (err, _) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(Spacing.md),
+          child: Text(
+            'Failed to load Annotations: $err',
+            style: AppTypography.body.copyWith(color: theme.textMuted),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
+      data: (highlights) {
+        if (highlights.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                PhosphorIcon(
+                  PhosphorIconsLight.highlighterCircle,
+                  size: 48,
+                  color: theme.textMuted,
+                ),
+                const SizedBox(height: Spacing.sm),
+                Text(
+                  'No Highlights or Notes Yet',
+                  style: AppTypography.headline.copyWith(
+                    color: theme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: Spacing.xxs),
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: Spacing.xl),
+                  child: Text(
+                    'Select any text in the reader to highlight or add notes.',
+                    style: AppTypography.micro
+                        .copyWith(color: theme.textMuted),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return ListView.separated(
           padding: const EdgeInsets.symmetric(
-            horizontal: Spacing.md,
+            horizontal: Spacing.sm,
             vertical: Spacing.xs,
           ),
-          child: TextField(
-            controller: _searchController,
-            focusNode: _searchFocusNode,
-            onChanged: (val) => setState(() => _filterQuery = val.trim()),
-            style: AppTypography.body.copyWith(color: theme.textPrimary),
-            decoration: InputDecoration(
-              hintText: 'Search notes & highlights...',
-              hintStyle: AppTypography.body.copyWith(color: theme.textMuted),
-              prefixIcon: PhosphorIcon(
-                PhosphorIconsLight.magnifyingGlass,
-                size: 16,
-                color: theme.textMuted,
-              ),
-              suffixIcon: _searchController.text.isNotEmpty
-                  ? IconButton(
-                      tooltip: 'Clear search',
-                      icon: PhosphorIcon(
-                        PhosphorIconsLight.x,
-                        size: 16,
-                        color: theme.textMuted,
-                      ),
-                      onPressed: () {
-                        _searchController.clear();
-                        setState(() => _filterQuery = '');
-                      },
-                    )
-                  : null,
-              isDense: true,
-              filled: true,
-              fillColor: theme.bgCanvas,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.sm),
-                borderSide: BorderSide(color: theme.borderSubtle),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.sm),
-                borderSide: BorderSide(color: theme.borderSubtle),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.sm),
-                borderSide: BorderSide(color: theme.accent, width: 1.5),
-              ),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: Spacing.sm,
-                vertical: Spacing.xs,
-              ),
-            ),
-          ),
-        ),
-
-        Expanded(
-          child: highlightsAsync.when(
-            loading: () => Center(
-              child: Text(
-                'Loading Annotations...',
-                style: AppTypography.micro.copyWith(color: theme.textMuted),
-              ),
-            ),
-            error: (err, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(Spacing.md),
-                child: Text(
-                  'Failed to load Annotations: $err',
-                  style: AppTypography.body.copyWith(color: theme.textMuted),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-            data: (highlights) {
-              if (highlights.isEmpty) {
-                return Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      PhosphorIcon(
-                        PhosphorIconsLight.highlighterCircle,
-                        size: 48,
-                        color: theme.textMuted,
-                      ),
-                      const SizedBox(height: Spacing.sm),
-                      Text(
-                        'No Highlights or Notes Yet',
-                        style: AppTypography.headline.copyWith(
-                          color: theme.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: Spacing.xxs),
-                      Padding(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: Spacing.xl),
-                        child: Text(
-                          'Select any text in the reader to highlight or add notes.',
-                          style: AppTypography.micro
-                              .copyWith(color: theme.textMuted),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }
-
-              final query = _filterQuery.toLowerCase();
-              final filtered = query.isEmpty
-                  ? highlights
-                  : highlights.where((h) {
-                      final textMatches =
-                          h.highlightedText.toLowerCase().contains(query);
-                      final noteMatches =
-                          h.note?.toLowerCase().contains(query) ?? false;
-                      return textMatches || noteMatches;
-                    }).toList();
-
-              if (filtered.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(Spacing.md),
-                    child: Text(
-                      'No matching highlights or notes.',
-                      style:
-                          AppTypography.body.copyWith(color: theme.textMuted),
-                    ),
-                  ),
-                );
-              }
-
-              return ListView.separated(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Spacing.sm,
-                  vertical: Spacing.xs,
-                ),
-                itemCount: filtered.length,
-                separatorBuilder: (_, _) => const SizedBox(height: Spacing.xs),
-                itemBuilder: (context, index) {
-                  final highlight = filtered[index];
-                  return _buildHighlightCard(
-                    theme: theme,
-                    highlight: highlight,
-                  );
-                },
-              );
-            },
-          ),
-        ),
-      ],
+          itemCount: highlights.length,
+          separatorBuilder: (_, _) => const SizedBox(height: Spacing.xs),
+          itemBuilder: (context, index) {
+            final highlight = highlights[index];
+            return _buildHighlightCard(
+              theme: theme,
+              highlight: highlight,
+            );
+          },
+        );
+      },
     );
   }
 
@@ -1045,20 +1004,247 @@ class _ReaderNavigationDrawerState
     return '${months[dt.month - 1]} ${dt.day}, ${dt.year} • $hour:$minute $ampm';
   }
 
-  List<_FlattenedTocItem> _flattenAndFilter(
-    List<TocEntry> entries,
-    String query,
+  Widget _buildSearchResultsBody(
+    ReaderThemeData theme,
+    SearchState searchState,
   ) {
+    return Column(
+      children: [
+        // Result count or progress header
+        Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Spacing.md,
+            vertical: Spacing.xxs,
+          ),
+          alignment: Alignment.centerLeft,
+          color: theme.bgCard.withValues(alpha: 0.5),
+          child: Row(
+            children: [
+              if (searchState.isSearching) ...[
+                SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: theme.accent,
+                  ),
+                ),
+                const SizedBox(width: Spacing.xs),
+              ],
+              Text(
+                searchState.isSearching
+                    ? 'Searching (${searchState.totalMatches} found)…'
+                    : '${searchState.totalMatches} ${searchState.totalMatches == 1 ? "match" : "matches"} found',
+                style: AppTypography.micro.copyWith(
+                  color: theme.textMuted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Results list or Empty State
+        Expanded(
+          child: _buildSearchResultsContent(theme, searchState),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchResultsContent(
+    ReaderThemeData theme,
+    SearchState searchState,
+  ) {
+    if (!searchState.isSearching && searchState.matches.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(Spacing.xl),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PhosphorIcon(
+                PhosphorIconsLight.magnifyingGlass,
+                size: 40,
+                color: theme.textMuted.withValues(alpha: 0.4),
+              ),
+              const SizedBox(height: Spacing.sm),
+              Text(
+                'No Results Found',
+                style: AppTypography.headline.copyWith(
+                  color: theme.textPrimary,
+                  fontSize: 15,
+                ),
+              ),
+              const SizedBox(height: Spacing.xs),
+              Text(
+                'No matches found for "${_searchController.text.trim()}". Try a different search term.',
+                textAlign: TextAlign.center,
+                style: AppTypography.micro.copyWith(
+                  color: theme.textMuted,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(
+        horizontal: Spacing.sm,
+        vertical: Spacing.xs,
+      ),
+      itemCount: searchState.groups.length,
+      itemBuilder: (context, groupIdx) {
+        final group = searchState.groups[groupIdx];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: Spacing.sm),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Chapter header
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Spacing.xs,
+                  vertical: Spacing.xs,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        group.chapterTitle?.isNotEmpty == true
+                            ? group.chapterTitle!
+                            : 'Chapter ${group.chapterIndex + 1}',
+                        style: AppTypography.headline.copyWith(
+                          color: theme.accent,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: Spacing.xs),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: theme.accent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${group.count}',
+                        style: AppTypography.micro.copyWith(
+                          color: theme.accent,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Match cards in this chapter
+              ...group.matches.map((match) {
+                final isCurrentActive =
+                    searchState.activeMatch?.id == match.id;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: Spacing.xs),
+                  child: InkWell(
+                    onTap: () {
+                      ref
+                          .read(searchControllerProvider.notifier)
+                          .selectMatch(match);
+                      widget.onSelectAnchor?.call(match.startAnchor);
+                      if (widget.onSelectAnchor == null) {
+                        widget.onSelectPage(match.startAnchor.chapterIndex);
+                      }
+                      Navigator.of(context).pop();
+                    },
+                    borderRadius: BorderRadius.circular(Radii.sm),
+                    child: Container(
+                      padding: const EdgeInsets.all(Spacing.xs),
+                      decoration: BoxDecoration(
+                        color: isCurrentActive
+                            ? theme.accent.withValues(alpha: 0.10)
+                            : theme.bgCard,
+                        borderRadius: BorderRadius.circular(Radii.sm),
+                        border: Border.all(
+                          color: isCurrentActive
+                              ? theme.accent.withValues(alpha: 0.5)
+                              : (theme.isDark ? Colors.white10 : Colors.black12),
+                        ),
+                      ),
+                      child: _buildSnippetRichText(theme, match),
+                    ),
+                  ),
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSnippetRichText(ReaderThemeData theme, SearchMatch match) {
+    final snippet = match.snippet;
+    final start = match.snippetMatchStart.clamp(0, snippet.length);
+    final end = match.snippetMatchEnd.clamp(0, snippet.length);
+
+    if (start >= end) {
+      return Text(
+        snippet,
+        style: AppTypography.body.copyWith(
+          color: theme.textPrimary,
+          fontSize: 12,
+        ),
+      );
+    }
+
+    final before = snippet.substring(0, start);
+    final term = snippet.substring(start, end);
+    final after = snippet.substring(end);
+
+    return RichText(
+      maxLines: 3,
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(
+        style: AppTypography.body.copyWith(
+          color: theme.textMuted,
+          fontSize: 12,
+          height: 1.4,
+        ),
+        children: [
+          TextSpan(text: before),
+          TextSpan(
+            text: term,
+            style: TextStyle(
+              color: theme.isDark ? Colors.white : Colors.black,
+              backgroundColor: theme.isDark
+                  ? const Color(0xFFFF9800).withValues(alpha: 0.5)
+                  : const Color(0xFFFFD54F).withValues(alpha: 0.6),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          TextSpan(text: after),
+        ],
+      ),
+    );
+  }
+
+  List<_FlattenedTocItem> _flattenToc(List<TocEntry> entries) {
     final result = <_FlattenedTocItem>[];
 
     void traverse(List<TocEntry> list, int depth) {
       for (final entry in list) {
-        final matches =
-            query.isEmpty ||
-            entry.title.toLowerCase().contains(query.toLowerCase());
-        if (matches) {
-          result.add(_FlattenedTocItem(entry: entry, depth: depth));
-        }
+        result.add(_FlattenedTocItem(entry: entry, depth: depth));
         if (entry.children.isNotEmpty) {
           traverse(entry.children, depth + 1);
         }

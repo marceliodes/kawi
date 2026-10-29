@@ -23,15 +23,22 @@ import '../providers/reader_settings_provider.dart';
 import '../services/chapter_paginator.dart';
 import '../services/document_extractor.dart';
 import '../widgets/reader_canvas.dart';
+import '../widgets/reader_search_hud.dart';
 import '../widgets/reader_settings_modal.dart';
 import '../widgets/toc_drawer.dart';
 import '../widgets/typography_settings_sheet.dart';
 import '../widgets/tts_control_bar.dart';
+import '../providers/search_provider.dart';
 import '../../tts/models/tts_models.dart';
 import '../../tts/providers/tts_provider.dart';
 import '../../tts/providers/voice_manager_provider.dart';
 import '../../tts/screens/voice_manager_screen.dart';
 import '../../tts/services/tts_text_normalizer.dart';
+
+/// Intent to toggle in-book search HUD.
+class ToggleSearchIntent extends Intent {
+  const ToggleSearchIntent();
+}
 
 /// Intent to toggle bookmark state at the active reading anchor.
 class ToggleBookmarkIntent extends Intent {
@@ -113,10 +120,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
   bool _isUserDesyncedFromTts = false;
   int? _speakingChapterIndex;
   int? _speakingPageIndexInChapter;
+  bool _isSearchHudVisible = false;
+  NavigationDrawerTab _drawerInitialTab = NavigationDrawerTab.contents;
+  bool _drawerAutoFocusSearch = false;
 
   double? _currentColumnWidth;
   double? _currentColumnHeight;
   late final AppDatabase _db;
+  late final BookSearchController _searchNotifier;
 
   bool get _isEpub => widget.document.isEpub;
 
@@ -124,11 +135,20 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
   void initState() {
     super.initState();
     _db = ref.read(databaseProvider);
+    _searchNotifier = ref.read(searchControllerProvider.notifier);
     WidgetsBinding.instance.addObserver(this);
     _scrollController = ScrollController();
     _pageController = PageController();
     _itemScrollController = ItemScrollController();
     _itemPositionsListener = ItemPositionsListener.create();
+
+    if (widget.document.isEpub) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _searchNotifier.setDocumentFilePath(widget.document.filePath);
+        }
+      });
+    }
 
     _loadInitialProgress();
   }
@@ -215,6 +235,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     _autoHideTimer?.cancel();
     _scrollController.dispose();
     _pageController.dispose();
+    _searchNotifier.clearSearch();
     super.dispose();
   }
 
@@ -503,13 +524,35 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     }
   }
 
+  void _openNavigationDrawer({
+    NavigationDrawerTab initialTab = NavigationDrawerTab.contents,
+    bool autoFocusSearch = false,
+  }) {
+    setState(() {
+      _drawerInitialTab = initialTab;
+      _drawerAutoFocusSearch = autoFocusSearch;
+    });
+    _scaffoldKey.currentState?.openDrawer();
+  }
+
+  void _openSearchDrawer() {
+    if (!widget.document.isEpub) return;
+    if (_isSearchHudVisible) {
+      setState(() {
+        _isSearchHudVisible = false;
+      });
+    }
+    _openNavigationDrawer(autoFocusSearch: true);
+  }
+
   void _toggleNavigationDrawer() {
     if (_scaffoldKey.currentState?.isDrawerOpen == true) {
       Navigator.of(context).pop();
     } else {
-      _scaffoldKey.currentState?.openDrawer();
+      _openNavigationDrawer();
     }
   }
+
 
   Future<void> _navigateToAnchor(ReadingAnchor anchor) async {
     final total = widget.document.pageCount > 0 ? widget.document.pageCount : 1;
@@ -1099,6 +1142,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     });
 
     final shortcuts = <ShortcutActivator, Intent>{
+      // In-Book Search Toggle: Ctrl + F, Cmd + F
+      const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+          const ToggleSearchIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyF, meta: true):
+          const ToggleSearchIntent(),
+
       // Bookmark Toggle: Ctrl + D, Cmd + D
       const SingleActivator(LogicalKeyboardKey.keyD, control: true):
           const ToggleBookmarkIntent(),
@@ -1153,6 +1202,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
     };
 
     final actions = <Type, Action<Intent>>{
+      ToggleSearchIntent: CallbackAction<ToggleSearchIntent>(
+        onInvoke: (_) => _openSearchDrawer(),
+      ),
       ToggleBookmarkIntent: CallbackAction<ToggleBookmarkIntent>(
         onInvoke: (_) => _toggleBookmark(),
       ),
@@ -1196,6 +1248,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
               filePath: widget.document.filePath,
               currentPageIndex: _currentChapterIndex,
               isPaginated: settings.isPaginated,
+              initialTab: _drawerInitialTab,
+              autoFocusSearch: _drawerAutoFocusSearch,
               onSelectPage: (pageIndex) {
                 Navigator.of(context).pop();
                 setState(() {
@@ -1417,6 +1471,32 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
                           ),
                         ),
                       ),
+
+                    // Floating Search HUD (Ctrl+F)
+                    if (_isSearchHudVisible)
+                      Positioned(
+                        top: _isChromeVisible ? 64 : 16,
+                        right: 24,
+                        child: ReaderSearchHud(
+                          onClose: () {
+                            setState(() {
+                              _isSearchHudVisible = false;
+                            });
+                            ref
+                                .read(searchControllerProvider.notifier)
+                                .clearSearch();
+                            _canvasKey.currentState?.requestFocus();
+                          },
+                          onNavigateToMatch: (match) {
+                            _navigateToAnchor(match.startAnchor);
+                          },
+                          onOpenAllResults: () {
+                            _openNavigationDrawer(
+                              autoFocusSearch: true,
+                            );
+                          },
+                        ),
+                      ),
                   ],
                 );
               },
@@ -1509,6 +1589,18 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen>
           ),
 
           const SizedBox(width: Spacing.xs),
+
+          // Search in Book Button (Ctrl+F)
+          if (widget.document.isEpub)
+            IconButton(
+              tooltip: 'Find in book (Ctrl+F)',
+              icon: PhosphorIcon(
+                PhosphorIconsLight.magnifyingGlass,
+                size: 20,
+                color: theme.textPrimary,
+              ),
+              onPressed: _openSearchDrawer,
+            ),
 
           // Bookmark Toggle Button
           Builder(
